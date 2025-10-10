@@ -16,8 +16,15 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
+    "@helia/unixfs": "^6.0.1",
+    "helia": "^6.0.1",
+    "multiformats": "^13.4.1",
     "vue": "^3.5.22",
-    "vue-router": "^4.5.1"
+    "vue-router": "^4.5.1",
+    "y-indexeddb": "^9.0.12",
+    "y-protocols": "^1.0.6",
+    "y-webrtc": "^10.3.0",
+    "yjs": "^13.6.27"
   },
   "devDependencies": {
     "@tsconfig/node22": "^22.0.2",
