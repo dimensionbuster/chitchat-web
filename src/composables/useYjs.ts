@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import type { ChatMessage } from '@/types/types'
@@ -6,7 +7,24 @@ import type { ChatMessage } from '@/types/types'
 const SIGNAL_URLS = (import.meta.env.VITE_SIGNAL_URLS || '')
   .split(',')
   .map((url: string) => url.trim())
-  .filter(Boolean) // .env에서 불러옴
+  .filter(Boolean)
+
+const iceServers = [
+  // 1. Google STUN
+  { urls: 'stun:stun.l.google.com:19302' },
+  // 2. TURN (3478)
+  {
+    urls: 'turn:turn.gongbbu.com:3478',
+    username: 'gongbbu', // 필요에 따라 수정
+    credential: 'gongbbu', // 필요에 따라 수정
+  },
+  // 3. TURN (5349)
+  {
+    urls: 'turns:turn.gongbbu.com:5349',
+    username: 'gongbbu', // 필요에 따라 수정
+    credential: 'gongbbu', // 필요에 따라 수정
+  },
+]
 const ROOM_ID = 'default-room' // 채팅방 ID, 필요에 따라 변경 가능
 
 export function useYjs() {
@@ -14,7 +32,10 @@ export function useYjs() {
   const messages = doc.getArray<ChatMessage>('messages')
   const files = doc.getMap<any>('files')
 
-  const provider = new WebrtcProvider(ROOM_ID, doc, { signaling: SIGNAL_URLS })
+  const provider = new WebrtcProvider(ROOM_ID, doc, {
+    signaling: SIGNAL_URLS,
+    peerOpts: { config: { iceServers } },
+  })
   const persistence = new IndexeddbPersistence(`ydb-${ROOM_ID}`, doc)
 
   function sendTextMessage(author: string, text: string) {

@@ -5,16 +5,14 @@ import { CID } from 'multiformats/cid'
 
 let heliaPromise: ReturnType<typeof createHelia> | null = null
 
-export function useIpfs() {
-  async function getHelia() {
-    if (!heliaPromise) {
-      heliaPromise = createHelia({
-        // config options here
-      })
-    }
-    return heliaPromise
+export async function getHelia() {
+  if (!heliaPromise) {
+    heliaPromise = createHelia()
   }
+  return heliaPromise
+}
 
+export function useIpfs() {
   async function addFile(file: File) {
     const helia = await getHelia()
     const fs = unixfs(helia)
