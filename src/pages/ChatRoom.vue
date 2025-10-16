@@ -108,7 +108,6 @@ const goToHome = () => {
       "
     >
       <h1>P2P Chat + Files (Vue SPA) - {{ activeRoomId }}</h1>
-      <button @click="debugDeleteAll">Delete All</button>
       <button @click="debugForceSync">Force Sync</button>
       <button @click="goToHome">Go Home</button>
     </div>
@@ -151,7 +150,7 @@ const goToHome = () => {
         :disabled="!yjsReady"
       />
       <button @click="onSend" :disabled="!yjsReady">Send</button>
-      <input type="file" @change="onPick" :disabled="!yjsReady" />
+      <!-- <input type="file" @change="onPick" :disabled="!yjsReady" /> -->
     </div>
   </div>
 </template>
