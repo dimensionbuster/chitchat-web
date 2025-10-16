@@ -40,12 +40,16 @@ export function useYjs() {
 
   function sendTextMessage(author: string, text: string) {
     if (!text.trim()) return
-    messages.push([{ id: crypto.randomUUID(), author, text, ts: Date.now() }])
+    const msg = { id: crypto.randomUUID(), author, text, ts: Date.now() }
+    console.debug('[useYjs] sendTextMessage ->', msg)
+    messages.push([msg])
   }
 
   function attachFileMeta(cid: string, meta: any, author: string) {
+    console.debug('[useYjs] attachFileMeta ->', { cid, meta, author })
     files.set(cid, meta)
-    messages.push([{ id: crypto.randomUUID(), author, cid, ts: Date.now() }])
+    const msg = { id: crypto.randomUUID(), author, cid, ts: Date.now() }
+    messages.push([msg])
   }
 
   return { doc, provider, persistence, messages, files, sendTextMessage, attachFileMeta }
