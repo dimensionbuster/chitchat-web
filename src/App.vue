@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useYjs } from './composables/useYjs'
 import { useIpfs } from './composables/useIpfs'
-import { observeYjsArray } from '@/util/yjs-observers'
-import { createPeerInspector } from '@/util/peer-inspect'
-import type { ChatMessage } from './types/types'
 
 const { addFile, getFile } = useIpfs()
 
@@ -13,16 +10,10 @@ const input = ref('')
 
 // Yjs 관련 상태
 
-const yjsReady = ref(true)
-const { messages, files, sendTextMessage, attachFileMeta, provider } = useYjs() as {
-  messages: ReturnType<typeof useYjs>['messages']
-  files: ReturnType<typeof useYjs>['files']
-  sendTextMessage: (author: string, text: string) => void
-  attachFileMeta: (cid: string, meta: Record<string, unknown>, author: string) => void
-  provider: unknown
-}
+const yjsReady = ref(false)
+const { messagesRef, files, sendTextMessage, attachFileMeta, provider } = useYjs()
 
-const onSend = () => {
+const onSend = async () => {
   if (!yjsReady.value) return
   sendTextMessage(me, input.value)
   input.value = ''
@@ -36,31 +27,30 @@ const onPick = async (e: Event) => {
   attachFileMeta(meta.cid, meta, me)
 }
 
-// Ensure Vue updates when Yjs messages change
-const tick = ref(0)
-let stopObserve: (() => void) | undefined
-onMounted(() => {
-  stopObserve = observeYjsArray(messages, () => tick.value++)
+// messagesRef from the composable keeps a reactive mirror of Y.Array
+
+const feed = computed(() => messagesRef.value)
+const feedContainer = ref<HTMLElement | null>(null)
+const scrollToBottom = () => {
+  if (feedContainer.value) {
+    feedContainer.value.scrollTop = feedContainer.value.scrollHeight
+  }
+}
+
+watch(messagesRef, async () => {
+  await nextTick()
+  console.log('feed updated, scroll to bottom')
+  scrollToBottom()
 })
-onUnmounted(() => stopObserve?.())
 
-// Peer inspection util
-const peersStatus = ref<Record<string, { connType: string; server?: string }>>({})
-const peerInspector = createPeerInspector(provider, 2000)
-onMounted(() => peerInspector.start())
-onUnmounted(() => peerInspector.stop())
-// poll statuses into reactive ref every poll interval
-const pollStatuses = () => Object.assign(peersStatus.value, peerInspector.getStatuses())
-const pollInterval = window.setInterval(pollStatuses, 2000)
-onUnmounted(() => clearInterval(pollInterval))
-
-const feed = computed<ChatMessage[]>(() => {
-  // reference tick to make this computed depend on Yjs changes
-  void tick.value
-  const arr = yjsReady.value ? (messages.toArray() as ChatMessage[]) : []
-  const sorted = arr.sort((a, b) => a.ts - b.ts)
-  console.debug('[App] feed recomputed, length=', sorted.length)
-  return sorted
+onMounted(() => {
+  if (provider.connected) {
+    yjsReady.value = true
+  }
+  provider.on('status', (e) => {
+    yjsReady.value = e.connected
+    console.log('Yjs status', e)
+  })
 })
 
 const download = async (cid?: string) => {
@@ -76,38 +66,22 @@ const download = async (cid?: string) => {
 </script>
 
 <template>
-  <div style="max-width: 720px; margin: 0 auto; padding: 16px">
-    <h1>P2P Chat + Files (Vue SPA)</h1>
-    <div style="margin-bottom:8px; font-size:13px; color:#444">
-      <strong>Connection:</strong>
-      <span v-if="Object.keys(peersStatus).length === 0">none</span>
-      <template v-else>
-        <span v-for="(s, id) in peersStatus" :key="id" style="margin-left:8px">
-          {{ id }}: {{ s.connType }}<span v-if="s.server"> ({{ s.server }})</span>
-        </span>
-      </template>
-    </div>
-
-    <div style="display: flex; gap: 8px; margin-bottom: 12px">
-      <input
-        v-model="input"
-        placeholder="메시지…"
-        style="flex: 1; padding: 6px; border: 1px solid #ccc"
-        @keyup.enter="onSend"
-        :disabled="!yjsReady"
-      />
-      <button @click="onSend" :disabled="!yjsReady">Send</button>
-      <input type="file" @change="onPick" :disabled="!yjsReady" />
+  <div style="height: 100%; width: 100%; padding: 12px; display: flex; flex-direction: column">
+    <div>
+      <h1>P2P Chat + Files (Vue SPA)</h1>
     </div>
 
     <ul
+      ref="feedContainer"
       style="
+        height: 80%;
         list-style: none;
         padding: 0;
         margin: 0;
         display: flex;
         flex-direction: column;
         gap: 6px;
+        overflow-y: scroll;
       "
     >
       <li v-if="!yjsReady" style="font-size: 14px; color: #888">Yjs 네트워크 연결 중…</li>
@@ -126,6 +100,17 @@ const download = async (cid?: string) => {
         </template>
       </li>
     </ul>
+    <div style="display: flex; gap: 8px; margin-top: 12px">
+      <input
+        v-model="input"
+        placeholder="메시지…"
+        style="flex: 1; padding: 6px; border: 1px solid #ccc"
+        @keyup.enter="onSend"
+        :disabled="!yjsReady"
+      />
+      <button @click="onSend" :disabled="!yjsReady">Send</button>
+      <input type="file" @change="onPick" :disabled="!yjsReady" />
+    </div>
   </div>
 </template>
 
@@ -134,6 +119,12 @@ html,
 body,
 #app {
   height: 100%;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
 }
 * {
   box-sizing: border-box;

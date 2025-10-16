@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { ref } from 'vue'
 
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from 'y-indexeddb'
@@ -32,6 +33,17 @@ export function useYjs() {
   const messages = doc.getArray<ChatMessage>('messages')
   const files = doc.getMap<any>('files')
 
+  // Reactive mirror for Vue components: updated whenever the Y.Array changes
+  const messagesRef = ref<ChatMessage[]>(messages.toArray())
+  try {
+    messages.observe(() => {
+      messagesRef.value = messages.toArray()
+    })
+  } catch (e) {
+    // if observe fails, ignore — best-effort
+    console.debug('[useYjs] messages.observe not available', e)
+  }
+
   const provider = new WebrtcProvider(ROOM_ID, doc, {
     signaling: SIGNAL_URLS,
     peerOpts: { config: { iceServers } },
@@ -52,5 +64,14 @@ export function useYjs() {
     messages.push([msg])
   }
 
-  return { doc, provider, persistence, messages, files, sendTextMessage, attachFileMeta }
+  return {
+    doc,
+    provider,
+    persistence,
+    messages,
+    messagesRef,
+    files,
+    sendTextMessage,
+    attachFileMeta,
+  }
 }

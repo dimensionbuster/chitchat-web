@@ -39,13 +39,19 @@ export function createPeerInspector(provider: unknown, intervalMs = 2000) {
       let server: string | undefined
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const pc = (peer as unknown as any)?._pc || (peer as unknown as any)?.pc || (peer as unknown as any)?.peerConnection
+        const pc =
+          (peer as unknown as any)?._pc ||
+          (peer as unknown as any)?.pc ||
+          (peer as unknown as any)?.peerConnection
         if (pc && typeof pc.getStats === 'function') {
           const stats: unknown = await pc.getStats()
           let localId: string | undefined
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           for (const report of (stats as any).values()) {
-            if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.selected)) {
+            if (
+              report.type === 'candidate-pair' &&
+              (report.state === 'succeeded' || report.selected)
+            ) {
               localId = report.localCandidateId || report.localCandidate || report.local
               // try to extract server info
               if (report.url) server = report.url
@@ -55,9 +61,19 @@ export function createPeerInspector(provider: unknown, intervalMs = 2000) {
           if (localId) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             for (const report of (stats as any).values()) {
-              if (report.id === localId && (report.type === 'local-candidate' || report.type === 'candidate')) {
+              if (
+                report.id === localId &&
+                (report.type === 'local-candidate' || report.type === 'candidate')
+              ) {
                 const t = report.candidateType || report.type
-                connType = t === 'relay' ? 'TURN (relay)' : t === 'srflx' ? 'STUN (srflx)' : t === 'host' ? 'host' : t || connType
+                connType =
+                  t === 'relay'
+                    ? 'TURN (relay)'
+                    : t === 'srflx'
+                      ? 'STUN (srflx)'
+                      : t === 'host'
+                        ? 'host'
+                        : t || connType
                 if (report.address) server = server || report.address
                 if (report.ip) server = server || report.ip
                 break
@@ -75,7 +91,7 @@ export function createPeerInspector(provider: unknown, intervalMs = 2000) {
     iteratePeers((peer: unknown, id: string) => jobs.push(collect(peer, id)))
     await Promise.all(jobs)
 
-    Object.keys(peersStatus).forEach(k => delete peersStatus[k])
+    Object.keys(peersStatus).forEach((k) => delete peersStatus[k])
     Object.assign(peersStatus, statuses)
   }
 

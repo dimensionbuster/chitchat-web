@@ -1,10 +1,12 @@
-export function observeYjsArray(messages: unknown, onChange: () => void) {
-  // quick guard for objects with Yjs-like observe API
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (!messages || (messages as any).observe == null || typeof (messages as any).observe !== 'function') return () => {}
-  const observer = () => onChange()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(messages as any).observe(observer)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return () => (messages as any).unobserve(observer)
+import type { ChatMessage } from '@/types/types'
+import { Array } from 'yjs'
+export function observeYjsArray(messages: Array<ChatMessage>, onChange: () => void) {
+  if (!messages || messages.observe == null || typeof messages.observe !== 'function')
+    return () => {
+      console.warn('Invalid Yjs array provided to observeYjsArray')
+      return
+    }
+  const observer = async () => await onChange()
+  messages.observe(observer)
+  return () => messages.unobserve(observer)
 }
