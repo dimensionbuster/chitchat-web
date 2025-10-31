@@ -1,8 +1,6 @@
 import type { FileMeta } from '@/types/types'
 import { cacheFile, getCachedFile } from './useLocalFileCache'
-
-// 파일 데이터를 Yjs에 직접 넣지 않고 메타데이터만 넣을 크기 임계값 (5MB)
-const FILE_DATA_THRESHOLD = 5 * 1024 * 1024
+import { FILE_DATA_THRESHOLD } from './fileConstants'
 
 /**
  * y-webrtc를 통한 파일 공유를 위한 유틸리티
@@ -34,7 +32,7 @@ export function useFileShare() {
       type: file.type,
     }
 
-    // 작은 파일만 fileData 포함 (5MB 이하)
+    // 작은 파일만 fileData 포함 (512KB 이하)
     if (file.size <= FILE_DATA_THRESHOLD) {
       const base64 = arrayBufferToBase64(arrayBuffer)
       meta.fileData = base64

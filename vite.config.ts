@@ -12,5 +12,5 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  base: '/chitchat-web/',
+  base: process.env.ELECTRON ? './' : '/chitchat-web/',
 })

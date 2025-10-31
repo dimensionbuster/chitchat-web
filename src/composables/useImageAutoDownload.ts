@@ -3,9 +3,7 @@ import type { Map as YMap } from 'yjs'
 import type { ChatMessage, FileMeta } from '@/types/types'
 import { useFileShare } from './useFileShare'
 import { getCachedFile } from './useLocalFileCache'
-
-// 자동 다운로드 크기 제한 (5MB)
-const MAX_AUTO_DOWNLOAD_SIZE = 512 * 1024
+import { FILE_DATA_THRESHOLD } from './fileConstants'
 
 /**
  * 이미지 자동 다운로드 관리
@@ -31,17 +29,17 @@ export function useImageAutoDownload(
   }
 
   /**
-   * 이미지가 자동 다운로드 대상인지 확인 (5MB 이하)
+   * 이미지가 자동 다운로드 대상인지 확인 (512KB 이하)
    */
   function shouldAutoDownload(fileId: string) {
     const meta = files.get(fileId)
 
     // 크기 정보 없으면 일단 자동 다운로드 시도
     if (!meta?.size) {
-      return true
+      return false
     }
 
-    return meta.size <= MAX_AUTO_DOWNLOAD_SIZE
+    return meta.size <= FILE_DATA_THRESHOLD
   }
 
   /**

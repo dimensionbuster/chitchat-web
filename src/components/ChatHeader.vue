@@ -19,8 +19,8 @@ const emit = defineEmits<{
     <div class="button-group">
       <button @click="emit('forceSync')">Force Sync</button>
       <button @click="emit('goHome')">Go Home</button>
-      <!-- <button @click="emit('clearChat')">Clear Chat</button> -->
-      <!-- <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button> -->
+      <button @click="emit('clearChat')">Clear Chat</button>
+      <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button>
     </div>
   </div>
 </template>

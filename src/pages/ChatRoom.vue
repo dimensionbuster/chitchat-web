@@ -6,6 +6,7 @@ import { useFileShare } from '../composables/useFileShare'
 import { useFileP2P } from '../composables/useFileP2P'
 import { useImageAutoDownload } from '../composables/useImageAutoDownload'
 import { useFileDownload } from '../composables/useFileDownload'
+import { useNotification } from '../composables/useNotification'
 import router from '@/router'
 import ChatHeader from '@/components/ChatHeader.vue'
 import MessageList from '@/components/MessageList.vue'
@@ -67,6 +68,9 @@ const { imageUrls, loadingImages, failedDownloads, downloadImage, processAutoDow
 
 // 파일 다운로드
 const { downloadFile } = useFileDownload(files, requestFileP2P)
+
+// 알림
+const { showNotification } = useNotification()
 
 // MessageList ref
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
@@ -165,13 +169,24 @@ const handleResetAll = async () => {
 // ========== 메시지 변경 감지 ==========
 watch(
   messagesRef,
-  async () => {
+  async (newMessages, oldMessages) => {
     await nextTick()
     messageListRef.value?.scrollToBottom()
 
     // 최근 N개 메시지의 이미지 자동 다운로드
     const recentMessages = messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD)
     await processAutoDownload(recentMessages)
+
+    // 새 메시지 알림 (본인 메시지가 아니고, 메시지가 증가한 경우)
+    if (newMessages.length > (oldMessages?.length || 0)) {
+      const newMessage = newMessages[newMessages.length - 1]
+      // 본인이 보낸 메시지가 아닐 때만 알림 표시
+      if (newMessage && newMessage.authorTrueUuid !== me) {
+        const authorName = newMessage.authorName || 'Unknown'
+        const text = newMessage.text || '파일을 전송했습니다'
+        showNotification(authorName, text)
+      }
+    }
   },
   { immediate: false },
 )
