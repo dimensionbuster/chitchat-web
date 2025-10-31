@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import type { FileMeta } from '@/types/types'
 import FileTransferProgress from './FileTransferProgress.vue'
 import { useFileTransferProgress } from '@/composables/useFileTransferProgress'
+import { FILE_DATA_THRESHOLD } from '@/composables/fileConstants'
 
 const props = defineProps<{
   fileId: string
@@ -19,12 +20,12 @@ const emit = defineEmits<{
 }>()
 
 // 5MB 임계값
-const MAX_AUTO_DOWNLOAD_SIZE = 5 * 1024 * 1024
+
 
 // 파일 크기가 큰지 체크
 const isLargeImage = computed(() => {
   if (!props.fileMeta?.size) return false
-  return props.fileMeta.size > MAX_AUTO_DOWNLOAD_SIZE
+  return props.fileMeta.size > FILE_DATA_THRESHOLD
 })
 
 // 파일 크기를 읽기 쉬운 형식으로 변환
