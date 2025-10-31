@@ -47,6 +47,8 @@ export function useYjs(roomId: string = ROOM_ID) {
   const provider = new WebrtcProvider(roomId, doc, {
     signaling: SIGNAL_URLS,
     peerOpts: { config: { iceServers } },
+    maxConns: 20, // 최대 피어 연결 수 제한
+    filterBcConns: true, // 같은 브라우저의 중복 연결 필터링
   })
   const persistence = new IndexeddbPersistence(`ydb-${roomId}`, doc)
 
