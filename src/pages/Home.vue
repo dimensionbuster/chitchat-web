@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 
 const router = useRouter()
 
-const roomId = ref(localStorage.getItem('roomId') || 'default-room')
+const roomId = ref(localStorage.getItem('roomId') || '')
 const name = ref(localStorage.getItem('name') || '')
 
 if (!localStorage.getItem('uuid')) {
@@ -14,6 +14,10 @@ if (!localStorage.getItem('uuid')) {
 const goChat = () => {
   const q: Record<string, string> = {}
   if (roomId.value.trim()) q.roomId = roomId.value.trim()
+  if (q.roomId === '') {
+    alert('room id is required')
+    return
+  }
   if (name.value.trim()) q.name = name.value.trim()
   localStorage.setItem('name', name.value.trim())
   localStorage.setItem('roomId', roomId.value.trim())
