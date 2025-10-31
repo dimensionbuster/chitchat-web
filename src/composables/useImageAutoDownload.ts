@@ -5,7 +5,7 @@ import { useFileShare } from './useFileShare'
 import { getCachedFile } from './useLocalFileCache'
 
 // 자동 다운로드 크기 제한 (5MB)
-const MAX_AUTO_DOWNLOAD_SIZE = 5 * 1024 * 1024
+const MAX_AUTO_DOWNLOAD_SIZE = 512 * 1024
 
 /**
  * 이미지 자동 다운로드 관리
