@@ -6,7 +6,7 @@ import type { Map as YMap } from 'yjs'
 import ChatMessage from './ChatMessage.vue'
 
 defineProps<{
-  messages: ChatMessageType[]
+  messages: readonly ChatMessageType[]
   files: YMap<FileMeta> | Map<string, FileMeta>
   imageUrls: Map<string, string>
   loadingImages: Set<string>

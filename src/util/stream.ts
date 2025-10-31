@@ -1,6 +1,4 @@
-export function readableStreamToAsyncIterable(
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterable<Uint8Array> {
+export function readableStreamToAsyncIterable(stream: ReadableStream<Uint8Array>) {
   const reader = stream.getReader()
   return {
     async *[Symbol.asyncIterator]() {

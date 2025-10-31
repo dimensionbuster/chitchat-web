@@ -14,7 +14,7 @@ export function useFileShare() {
    * 파일을 준비하여 FileMeta 생성
    * 큰 파일은 fileData를 포함하지 않음 (메타데이터만)
    */
-  async function prepareFile(file: File): Promise<{ fileId: string; meta: FileMeta }> {
+  async function prepareFile(file: File) {
     console.log(`[FileShare] 파일 준비 시작: ${file.name} (${file.size} bytes)`)
 
     // 파일을 ArrayBuffer로 읽기
@@ -87,7 +87,7 @@ export function useFileShare() {
 /**
  * ArrayBuffer를 base64 문자열로 변환
  */
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+function arrayBufferToBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer)
   let binary = ''
   const len = bytes.byteLength
@@ -105,7 +105,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 /**
  * base64 문자열을 ArrayBuffer로 변환
  */
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
+function base64ToArrayBuffer(base64: string) {
   const binary = atob(base64)
   const len = binary.length
   const bytes = new Uint8Array(len)

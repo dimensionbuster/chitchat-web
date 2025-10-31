@@ -107,8 +107,8 @@ export function useFileP2P(
    * 파일 응답 대기
    * 다른 피어로부터 파일 데이터를 받을 때까지 대기
    */
-  function waitForFileResponse(fileId: string, timeout: number): Promise<Blob> {
-    return new Promise((resolve, reject) => {
+  function waitForFileResponse(fileId: string, timeout: number) {
+    return new Promise<Blob>((resolve, reject) => {
       let resolved = false // 중복 resolve 방지
       let checkCount = 0
 

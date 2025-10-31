@@ -5,7 +5,7 @@
 /**
  * ArrayBuffer를 base64 문자열로 변환
  */
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+export function arrayBufferToBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer)
   let binary = ''
   const len = bytes.byteLength
@@ -23,7 +23,7 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
 /**
  * base64 문자열을 ArrayBuffer로 변환
  */
-export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+export function base64ToArrayBuffer(base64: string) {
   const binary = atob(base64)
   const len = binary.length
   const bytes = new Uint8Array(len)

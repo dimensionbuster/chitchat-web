@@ -15,7 +15,7 @@ export function useFileDownload(
   /**
    * 파일을 다운로드하여 저장
    */
-  async function downloadFile(fileId: string): Promise<void> {
+  async function downloadFile(fileId: string) {
     const meta = files.get(fileId)
     if (!meta) {
       console.error('파일 메타데이터를 찾을 수 없습니다:', fileId)
@@ -48,7 +48,7 @@ export function useFileDownload(
   /**
    * Blob을 파일로 다운로드
    */
-  function triggerDownload(blob: Blob, filename: string): void {
+  function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

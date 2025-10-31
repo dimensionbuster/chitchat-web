@@ -7,7 +7,7 @@ const DB_VERSION = 1
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
-function getDB(): Promise<IDBDatabase> {
+function getDB() {
   if (!dbPromise) {
     dbPromise = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION)
@@ -26,7 +26,7 @@ function getDB(): Promise<IDBDatabase> {
   return dbPromise
 }
 
-export async function cacheFile(cid: string, blob: Blob): Promise<void> {
+export async function cacheFile(cid: string, blob: Blob) {
   try {
     const db = await getDB()
     const tx = db.transaction(STORE_NAME, 'readwrite')
@@ -65,7 +65,7 @@ export async function getCachedFile(cid: string): Promise<Blob | null> {
   }
 }
 
-export async function hasCachedFile(cid: string): Promise<boolean> {
+export async function hasCachedFile(cid: string) {
   const blob = await getCachedFile(cid)
   return blob !== null
 }

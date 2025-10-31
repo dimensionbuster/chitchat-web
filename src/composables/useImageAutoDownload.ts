@@ -25,7 +25,7 @@ export function useImageAutoDownload(
   /**
    * 파일이 이미지인지 확인
    */
-  function isImage(fileId: string): boolean {
+  function isImage(fileId: string) {
     const meta = files.get(fileId)
     return meta?.type?.startsWith('image/') ?? false
   }
@@ -33,7 +33,7 @@ export function useImageAutoDownload(
   /**
    * 이미지가 자동 다운로드 대상인지 확인 (5MB 이하)
    */
-  function shouldAutoDownload(fileId: string): boolean {
+  function shouldAutoDownload(fileId: string) {
     const meta = files.get(fileId)
 
     // 크기 정보 없으면 일단 자동 다운로드 시도

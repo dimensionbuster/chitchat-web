@@ -114,7 +114,7 @@ export function useFileTransferProgress() {
   /**
    * 특정 파일의 진행률 (0-100%)
    */
-  function getProgressPercent(fileId: string): number {
+  function getProgressPercent(fileId: string) {
     void updateCounter.value // 반응성 트리거
     const transfer = transfers[fileId]
     if (!transfer) return 0
