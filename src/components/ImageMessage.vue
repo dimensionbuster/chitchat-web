@@ -2,9 +2,11 @@
 defineOptions({ name: 'ImageMessage' })
 import { computed } from 'vue'
 import type { FileMeta } from '@/types/types'
+import FileTransferProgress from './FileTransferProgress.vue'
+import { useFileTransferProgress } from '@/composables/useFileTransferProgress'
 
 const props = defineProps<{
-  cid: string
+  fileId: string
   imageUrl: string | undefined
   isLoading: boolean
   fileMeta: FileMeta | undefined
@@ -12,12 +14,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  download: [cid: string]
-  requestDownload: [cid: string]
+  download: [fileId: string]
+  requestDownload: [fileId: string]
 }>()
 
-// 25MB 임계값
-const MAX_AUTO_DOWNLOAD_SIZE = 25 * 1024 * 1024
+// 5MB 임계값
+const MAX_AUTO_DOWNLOAD_SIZE = 5 * 1024 * 1024
 
 // 파일 크기가 큰지 체크
 const isLargeImage = computed(() => {
@@ -35,18 +37,25 @@ const formatFileSize = (bytes: number | undefined) => {
 }
 
 const handleImageClick = () => {
-  emit('download', props.cid)
+  emit('download', props.fileId)
 }
 
 const handleLoadImage = () => {
-  emit('requestDownload', props.cid)
+  emit('requestDownload', props.fileId)
 }
+
+// 전송 중인지 확인
+const { isTransferring } = useFileTransferProgress()
+const showProgress = computed(() => isTransferring(props.fileId))
 </script>
 
 <template>
   <div class="image-message">
+    <!-- 전송 진척도 -->
+    <FileTransferProgress v-if="showProgress" :fileId="fileId" :fileName="fileMeta?.name" />
+
     <!-- 로딩 중 -->
-    <div v-if="isLoading" class="loading-text">이미지 로딩 중...</div>
+    <div v-if="isLoading && !showProgress" class="loading-text">이미지 로딩 중...</div>
 
     <!-- 이미지 표시 (이미 다운로드됨) -->
     <div v-else-if="imageUrl" class="image-container">
@@ -55,7 +64,7 @@ const handleLoadImage = () => {
         :alt="fileMeta?.name || 'image'"
         class="image-preview"
         @click="handleImageClick"
-        :title="'클릭하여 다운로드: ' + (fileMeta?.name || cid)"
+        :title="'클릭하여 다운로드: ' + (fileMeta?.name || fileId)"
       />
     </div>
 

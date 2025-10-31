@@ -9,6 +9,7 @@ const emit = defineEmits<{
   forceSync: []
   goHome: []
   clearChat: []
+  resetAll: []
 }>()
 </script>
 
@@ -19,6 +20,7 @@ const emit = defineEmits<{
       <button @click="emit('forceSync')">Force Sync</button>
       <button @click="emit('goHome')">Go Home</button>
       <!-- <button @click="emit('clearChat')">Clear Chat</button> -->
+      <!-- <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button> -->
     </div>
   </div>
 </template>
@@ -44,5 +46,16 @@ h1 {
 button {
   padding: 6px 12px;
   cursor: pointer;
+}
+
+button.danger {
+  background-color: #ff4444;
+  color: white;
+  border: none;
+  font-weight: bold;
+}
+
+button.danger:hover {
+  background-color: #cc0000;
 }
 </style>

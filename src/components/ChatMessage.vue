@@ -14,8 +14,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  download: [cid: string]
-  requestDownload: [cid: string]
+  download: [fileId: string]
+  requestDownload: [fileId: string]
 }>()
 
 type AnyMessage = ChatMessage & { author?: string }
@@ -38,8 +38,8 @@ const isImage = computed(() => {
 
     <!-- 이미지 메시지 -->
     <ImageMessage
-      v-else-if="message.cid && isImage"
-      :cid="message.cid"
+      v-else-if="message.fileId && isImage"
+      :fileId="message.fileId"
       :imageUrl="imageUrl"
       :isLoading="isImageLoading"
       :fileMeta="fileMeta"
@@ -50,8 +50,8 @@ const isImage = computed(() => {
 
     <!-- 일반 파일 메시지 -->
     <FileMessage
-      v-else-if="message.cid"
-      :cid="message.cid"
+      v-else-if="message.fileId"
+      :fileId="message.fileId"
       :fileMeta="fileMeta"
       @download="emit('download', $event)"
     />

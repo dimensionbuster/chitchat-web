@@ -15,8 +15,8 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  download: [cid: string]
-  requestDownload: [cid: string]
+  download: [fileId: string]
+  requestDownload: [fileId: string]
 }>()
 
 const feedContainer = ref<HTMLElement | null>(null)
@@ -38,10 +38,10 @@ defineExpose({ scrollToBottom })
       v-for="m in messages"
       :key="m.id"
       :message="m"
-      :fileMeta="m.cid ? files.get(m.cid) : undefined"
-      :imageUrl="m.cid ? imageUrls.get(m.cid) : undefined"
-      :isImageLoading="m.cid ? loadingImages.has(m.cid) : false"
-      :errorMessage="m.cid ? failedDownloads.get(m.cid) : undefined"
+      :fileMeta="m.fileId ? files.get(m.fileId) : undefined"
+      :imageUrl="m.fileId ? imageUrls.get(m.fileId) : undefined"
+      :isImageLoading="m.fileId ? loadingImages.has(m.fileId) : false"
+      :errorMessage="m.fileId ? failedDownloads.get(m.fileId) : undefined"
       @download="emit('download', $event)"
       @requestDownload="emit('requestDownload', $event)"
     />
