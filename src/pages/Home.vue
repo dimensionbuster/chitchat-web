@@ -12,16 +12,25 @@ if (!localStorage.getItem('uuid')) {
   localStorage.setItem('uuid', crypto.randomUUID())
 }
 const goChat = () => {
-  const q: Record<string, string> = {}
-  if (roomId.value.trim()) q.roomId = roomId.value.trim()
-  if (q.roomId === '') {
+  const trimmedRoomId = roomId.value.trim()
+  if (trimmedRoomId === '') {
     alert('room id is required')
     return
   }
-  if (name.value.trim()) q.name = name.value.trim()
-  localStorage.setItem('name', name.value.trim())
-  localStorage.setItem('roomId', roomId.value.trim())
-  router.push({ name: 'ChatRoom', query: q })
+
+  const trimmedName = name.value.trim()
+  localStorage.setItem('name', trimmedName)
+  localStorage.setItem('roomId', trimmedRoomId)
+
+  // Electron 환경에서는 새 창으로 열기
+  if (window.electronApi) {
+    window.electronApi.openChatRoom(trimmedRoomId, trimmedName || undefined)
+  } else {
+    // 웹 환경에서는 라우터로 이동
+    const q: Record<string, string> = { roomId: trimmedRoomId }
+    if (trimmedName) q.name = trimmedName
+    router.push({ name: 'ChatRoom', query: q })
+  }
 }
 </script>
 

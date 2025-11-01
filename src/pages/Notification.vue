@@ -15,6 +15,7 @@ const props = defineProps<{
   authorName: string
   text: string
   messageId: string
+  roomId: string
 }>()
 
 // 상수
@@ -105,14 +106,16 @@ function closeNotification(): void {
 }
 
 /**
- * 알림 클릭 시: 메인 창 포커스 및 알림 닫기
+ * 알림 클릭 시: 해당 채팅방 창 열기 및 알림 닫기
  */
 function onNotificationClick(): void {
   const api = getElectronApi()
 
-  // 메인 창 표시 요청
+  // 해당 채팅방 창 열기 요청
   if (api?.clickNotification) {
-    api.clickNotification(props.messageId)
+    // userName은 localStorage에서 가져오기 (알림창에는 전달되지 않으므로)
+    const userName = localStorage.getItem('name') || undefined
+    api.clickNotification(props.roomId, userName)
   }
 
   // 알림 닫기

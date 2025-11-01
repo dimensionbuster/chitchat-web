@@ -29,6 +29,7 @@ const router = createRouter({
         authorName: (route.query.authorName as string) || 'Unknown',
         text: (route.query.text as string) || '',
         messageId: (route.query.messageId as string) || '',
+        roomId: (route.query.roomId as string) || '',
       }),
     },
   ],

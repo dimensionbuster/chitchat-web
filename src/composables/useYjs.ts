@@ -5,7 +5,8 @@ import { IndexeddbPersistence } from 'y-indexeddb'
 import type { ChatMessage, FileMeta } from '@/types/types'
 import { useFileTransferProgress } from './useFileTransferProgress'
 
-const MAX_MESSAGES = 50
+const DEFAULT_VISIBLE_MESSAGES = 50
+const LOAD_MORE_COUNT = 30
 const ROOM_ID = 'default-room'
 
 const SIGNAL_URLS = (import.meta.env.VITE_SIGNAL_URLS || '')
@@ -21,9 +22,8 @@ const iceServers = [
 
 const yjsInstances = new Map<string, ReturnType<typeof createYjsInstance>>()
 
-const getRecentMessages = (messages: Y.Array<ChatMessage>) => {
-  const start = Math.max(0, messages.length - MAX_MESSAGES)
-  return messages.toArray().slice(start)
+const getAllMessages = (messages: Y.Array<ChatMessage>) => {
+  return messages.toArray()
 }
 
 const waitForSync = (provider: WebrtcProvider) =>
@@ -43,10 +43,11 @@ const waitForSync = (provider: WebrtcProvider) =>
       }
     })
 
+    // 타임아웃을 1초로 단축 (IndexedDB에서 이미 로드했으므로)
     setTimeout(() => {
-      console.log('[useYjs] WebRTC 동기화 타임아웃 - 계속 진행')
+      console.log('[useYjs] WebRTC 동기화 타임아웃 - 계속 진행 (로컬 데이터 사용)')
       resolveOnce()
-    }, 5000)
+    }, 1000)
   })
 
 async function createYjsInstance(roomId: string) {
@@ -54,15 +55,43 @@ async function createYjsInstance(roomId: string) {
   const messages = doc.getArray<ChatMessage>('messages')
   const files = doc.getMap<FileMeta>('files')
 
-  const internalMessagesRef = ref(getRecentMessages(messages))
+  // 전체 메시지 배열 (읽기 전용)
+  const internalMessagesRef = ref(getAllMessages(messages))
+
+  // 현재 표시할 메시지 수 (기본 50개)
+  const visibleMessageCount = ref(DEFAULT_VISIBLE_MESSAGES)
+
+  // 표시할 메시지 (최근 N개)
+  const displayedMessages = ref(internalMessagesRef.value.slice(-DEFAULT_VISIBLE_MESSAGES))
 
   messages.observe(() => {
-    internalMessagesRef.value = getRecentMessages(messages)
+    internalMessagesRef.value = getAllMessages(messages)
+    // 사용자가 최신 메시지를 보고 있을 때만 자동으로 업데이트
+    if (visibleMessageCount.value >= internalMessagesRef.value.length ||
+        visibleMessageCount.value === DEFAULT_VISIBLE_MESSAGES) {
+      displayedMessages.value = internalMessagesRef.value.slice(-visibleMessageCount.value)
+    }
     console.debug('[useYjs] messages updated:', messages.length)
   })
 
-  const messagesRef = readonly(internalMessagesRef)
+  const messagesRef = readonly(displayedMessages)
 
+  // 🔥 IndexedDB를 먼저 초기화하여 로컬 데이터 로드
+  console.log('[useYjs] IndexedDB 초기화 중...')
+  const persistence = new IndexeddbPersistence(`ydb-${roomId}`, doc)
+
+  // IndexedDB 로드 완료 대기
+  await new Promise<void>((resolve) => {
+    persistence.once('synced', () => {
+      console.log('[useYjs] ✅ IndexedDB 로드 완료:', {
+        messages: messages.length,
+        files: files.size,
+      })
+      resolve()
+    })
+  })
+
+  // IndexedDB 로드 후 WebRTC provider 시작 (백그라운드로 동기화)
   const provider = new WebrtcProvider(roomId, doc, {
     signaling: SIGNAL_URLS,
     peerOpts: { config: { iceServers } },
@@ -70,15 +99,22 @@ async function createYjsInstance(roomId: string) {
     filterBcConns: true,
   })
 
-  console.log('[useYjs] WebRTC provider 생성됨')
-  await waitForSync(provider)
+  console.log('[useYjs] WebRTC provider 생성됨 - 백그라운드 동기화 시작')
 
-  console.log('[useYjs] 문서 상태:', {
+  // WebRTC 동기화를 기다리지 않고 즉시 진행 (로컬 데이터로 시작)
+  // 백그라운드에서 피어와 동기화됨
+  waitForSync(provider).then(() => {
+    console.log('[useYjs] 최종 문서 상태:', {
+      messages: messages.length,
+      files: files.size,
+    })
+  })
+
+  console.log('[useYjs] 초기 로컬 데이터로 시작:', {
     messages: messages.length,
     files: files.size,
   })
 
-  const persistence = new IndexeddbPersistence(`ydb-${roomId}`, doc)
   _setupProviderListeners(provider)
 
   const sendTextMessage = (authorTrueUuid: string, authorName: string, text: string) => {
@@ -102,6 +138,35 @@ async function createYjsInstance(roomId: string) {
   }
 
   const getTransferMap = (key: string) => doc.getMap<string>(key)
+
+  // 이전 메시지 로드 (스크롤 위로)
+  const loadMoreMessages = () => {
+    const totalMessages = internalMessagesRef.value.length
+    if (visibleMessageCount.value >= totalMessages) {
+      console.log('[useYjs] 더 이상 로드할 메시지가 없습니다')
+      return false
+    }
+
+    const newCount = Math.min(visibleMessageCount.value + LOAD_MORE_COUNT, totalMessages)
+    visibleMessageCount.value = newCount
+    displayedMessages.value = internalMessagesRef.value.slice(-newCount)
+
+    console.log(`[useYjs] 메시지 로드: ${newCount}/${totalMessages}`)
+    return true
+  }
+
+  // 최신 메시지로 리셋
+  const resetToLatest = () => {
+    visibleMessageCount.value = DEFAULT_VISIBLE_MESSAGES
+    displayedMessages.value = internalMessagesRef.value.slice(-DEFAULT_VISIBLE_MESSAGES)
+    console.log('[useYjs] 최신 메시지로 리셋')
+  }
+
+  // 현재 최신 메시지를 보고 있는지 확인
+  const isViewingLatest = () => {
+    return visibleMessageCount.value === DEFAULT_VISIBLE_MESSAGES ||
+           visibleMessageCount.value >= internalMessagesRef.value.length
+  }
 
   const forceResync = async () => {
     console.log('[useYjs] 🔄 강제 재동기화 시작')
@@ -139,6 +204,9 @@ async function createYjsInstance(roomId: string) {
     requestFile,
     respondFile,
     getTransferMap,
+    loadMoreMessages,
+    resetToLatest,
+    isViewingLatest,
     forceResync,
   }
 

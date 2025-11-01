@@ -34,7 +34,7 @@ const isUploading = ref(false)
 const isInitialLoad = ref(true)
 
 // Yjs & File Systems
-const { messagesRef, messages, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, forceResync } = await useYjs(activeRoomId, me)
+const { messagesRef, messages, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync } = await useYjs(activeRoomId, me)
 const { prepareFile } = useFileShare()
 const { setupFileRequestListener, requestFileP2P } = useFileP2P(provider, files, me, requestFile, respondFile, getTransferMap)
 const { imageUrls, loadingImages, failedDownloads, downloadImage, processAutoDownload } = useImageAutoDownload(files, requestFileP2P)
@@ -66,7 +66,17 @@ const handleUploadFile = async (file: File) => {
 
 const handleRequestDownload = (fileId: string) => fileId && downloadImage(fileId, true)
 const handleDownload = (fileId: string) => fileId && downloadFile(fileId)
-const handleGoHome = () => router.push({ name: 'Home' })
+const handleLoadMore = () => loadMoreMessages()
+const handleResetToLatest = () => resetToLatest()
+const handleGoHome = () => {
+  // Electron 환경에서는 메인 윈도우 표시
+  if (window.electronApi) {
+    window.electronApi.showMainWindow()
+  } else {
+    // 웹 환경에서는 라우터로 이동
+    router.push({ name: 'Home' })
+  }
+}
 const handleClearChat = () => messages.delete(0, messages.length)
 const handleReload = () => window.location.reload()
 
@@ -112,21 +122,28 @@ const handleResetAll = async () => {
   }
 }
 // Message watching
-watch(messagesRef, async (newMessages, oldMessages) => {
+let previousTotalMessageCount = 0
+watch(messagesRef, async (newMessages) => {
   await nextTick()
-  messageListRef.value?.scrollToBottom()
+
+  // 최신 메시지를 보고 있을 때만 자동 스크롤
+  if (isViewingLatest()) {
+    messageListRef.value?.scrollToBottom()
+  }
 
   await processAutoDownload(messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD))
 
-  if (!isInitialLoad.value && oldMessages && newMessages.length > oldMessages.length) {
+  const currentTotalCount = messages.length // Y.Array의 실제 길이
+  if (!isInitialLoad.value && currentTotalCount > previousTotalMessageCount) {
     const newMessage = newMessages[newMessages.length - 1]
     if (newMessage && newMessage.authorTrueUuid !== me) {
       const authorName = newMessage.authorName || 'Unknown'
       const text = newMessage.text || '파일을 전송했습니다'
-      console.log('[알림] 새 메시지:', { authorName, text })
-      showNotification(authorName, text, newMessage.id)
+      console.log('[알림] 새 메시지:', { authorName, text, totalCount: currentTotalCount })
+      showNotification(authorName, text, newMessage.id, activeRoomId)
     }
   }
+  previousTotalMessageCount = currentTotalCount
 })
 
 // Initialization
@@ -139,14 +156,18 @@ onMounted(async () => {
 
   setupFileRequestListener()
 
+  // 초기 메시지 로드 및 스크롤
   await nextTick()
-  setTimeout(async () => {
-    await processAutoDownload(messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD))
-    setTimeout(() => {
-      isInitialLoad.value = false
-      console.log('[알림] 초기 로드 완료')
-    }, 1000)
-  }, 500)
+
+  // 최초 로딩 시 스크롤을 맨 아래로
+  messageListRef.value?.scrollToBottom()
+
+  // 이미지 자동 다운로드 시작
+  await processAutoDownload(messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD))
+
+  // 초기 로드 완료 표시 (알림 활성화)
+  isInitialLoad.value = false
+  console.log('[알림] 초기 로드 완료')
 })
 </script>
 
@@ -171,6 +192,8 @@ onMounted(async () => {
       :isReady="yjsReady"
       @download="handleDownload"
       @requestDownload="handleRequestDownload"
+      @loadMore="handleLoadMore"
+      @resetToLatest="handleResetToLatest"
     />
 
     <ChatInput
