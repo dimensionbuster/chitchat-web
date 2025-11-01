@@ -15,12 +15,12 @@ const emit = defineEmits<{
 
 <template>
   <div class="chat-header">
-    <h1>P2P Chat + Files (Vue SPA) - {{ roomId }}</h1>
+    <h1>ChitChat - {{ roomId }}</h1>
     <div class="button-group">
       <button @click="emit('forceSync')">Force Sync</button>
       <button @click="emit('goHome')">Go Home</button>
-      <button @click="emit('clearChat')">Clear Chat</button>
-      <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button>
+      <!-- <button @click="emit('clearChat')">Clear Chat</button> -->
+      <!-- <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button> -->
     </div>
   </div>
 </template>
