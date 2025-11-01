@@ -6,7 +6,8 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  forceSync: []
+  reload: []
+  forceResync: []
   goHome: []
   clearChat: []
   resetAll: []
@@ -17,7 +18,8 @@ const emit = defineEmits<{
   <div class="chat-header">
     <h1>ChitChat - {{ roomId }}</h1>
     <div class="button-group">
-      <button @click="emit('forceSync')">Force Sync</button>
+      <button @click="emit('reload')">Reload</button>
+      <button @click="emit('forceResync')" class="warning">🔄 Re-sync</button>
       <button @click="emit('goHome')">Go Home</button>
       <!-- <button @click="emit('clearChat')">Clear Chat</button> -->
       <!-- <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button> -->
@@ -46,6 +48,17 @@ h1 {
 button {
   padding: 6px 12px;
   cursor: pointer;
+}
+
+button.warning {
+  background-color: #ff9800;
+  color: white;
+  border: none;
+  font-weight: bold;
+}
+
+button.warning:hover {
+  background-color: #e68900;
 }
 
 button.danger {

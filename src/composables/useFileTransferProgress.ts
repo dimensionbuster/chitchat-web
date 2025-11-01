@@ -9,6 +9,7 @@ export interface FileTransferProgress {
   totalBytes: number
   isComplete: boolean
   startTime: number
+  isResumable: boolean // 이어받기 가능 여부
 }
 
 // 전역 상태: 모든 파일 전송 진행 상태
@@ -31,6 +32,7 @@ export function useFileTransferProgress() {
     type: 'upload' | 'download',
     totalChunks: number,
     totalBytes: number,
+    isResumable = true, // 기본적으로 다운로드는 이어받기 가능
   ) {
     transfers[fileId] = {
       fileId,
@@ -41,6 +43,7 @@ export function useFileTransferProgress() {
       totalBytes,
       isComplete: false,
       startTime: Date.now(),
+      isResumable: type === 'download' && isResumable, // 다운로드만 이어받기 지원
     }
     updateCounter.value++
     console.log(`[Progress] ${type} 시작: ${fileName} (${totalChunks} 청크)`)
@@ -103,6 +106,20 @@ export function useFileTransferProgress() {
   }
 
   /**
+   * 전송 취소
+   */
+  function cancelTransfer(fileId: string) {
+    const transfer = transfers[fileId]
+    if (!transfer) return
+
+    console.warn(`[Progress] 🚫 ${transfer.type} 취소: ${transfer.fileName}`)
+
+    // 즉시 제거
+    delete transfers[fileId]
+    updateCounter.value++
+  }
+
+  /**
    * 특정 파일의 전송 상태 가져오기
    */
   function getProgress(fileId: string) {
@@ -136,6 +153,7 @@ export function useFileTransferProgress() {
     updateProgress,
     completeTransfer,
     failTransfer,
+    cancelTransfer,
     getProgress,
     getProgressPercent,
     isTransferring,

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 defineOptions({ name: 'ImageMessage' })
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { FileMeta } from '@/types/types'
 import FileTransferProgress from './FileTransferProgress.vue'
+import ImageModal from './ImageModal.vue'
 import { useFileTransferProgress } from '@/composables/useFileTransferProgress'
 import { FILE_DATA_THRESHOLD } from '@/composables/fileConstants'
 
@@ -21,6 +22,8 @@ const emit = defineEmits<{
 
 // 5MB 임계값
 
+// 모달 상태
+const showModal = ref(false)
 
 // 파일 크기가 큰지 체크
 const isLargeImage = computed(() => {
@@ -38,11 +41,19 @@ const formatFileSize = (bytes: number | undefined) => {
 }
 
 const handleImageClick = () => {
+  showModal.value = true
+}
+
+const handleDownload = () => {
   emit('download', props.fileId)
 }
 
 const handleLoadImage = () => {
   emit('requestDownload', props.fileId)
+}
+
+const closeModal = () => {
+  showModal.value = false
 }
 
 // 전송 중인지 확인
@@ -65,7 +76,7 @@ const showProgress = computed(() => isTransferring(props.fileId))
         :alt="fileMeta?.name || 'image'"
         class="image-preview"
         @click="handleImageClick"
-        :title="'클릭하여 다운로드: ' + (fileMeta?.name || fileId)"
+        :title="'클릭하여 크게 보기: ' + (fileMeta?.name || fileId)"
       />
     </div>
 
@@ -93,6 +104,15 @@ const showProgress = computed(() => isTransferring(props.fileId))
     <div v-if="imageUrl && !isLargeImage" class="filename">
       {{ fileMeta?.name || 'image.jpg' }}
     </div>
+
+    <!-- 이미지 모달 -->
+    <ImageModal
+      v-if="showModal && imageUrl"
+      :imageUrl="imageUrl"
+      :fileName="fileMeta?.name || 'image.jpg'"
+      @close="closeModal"
+      @download="handleDownload"
+    />
   </div>
 </template>
 
