@@ -2,6 +2,6 @@
  * 파일 공유 관련 상수
  */
 
-// 파일 데이터를 Yjs에 직접 넣지 않고 메타데이터만 넣을 크기 임계값 (512KB)
+// 파일 데이터를 Yjs에 직접 넣지 않고 메타데이터만 넣을 크기 임계값 (256KB)
 // 이미지 자동 다운로드 크기 제한도 동일하게 적용
-export const FILE_DATA_THRESHOLD = 512 * 1024
+export const FILE_DATA_THRESHOLD = 256 * 1024

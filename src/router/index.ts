@@ -28,6 +28,7 @@ const router = createRouter({
       props: (route) => ({
         authorName: (route.query.authorName as string) || 'Unknown',
         text: (route.query.text as string) || '',
+        messageId: (route.query.messageId as string) || '',
       }),
     },
   ],

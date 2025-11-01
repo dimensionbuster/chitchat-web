@@ -36,6 +36,7 @@ if (props.name && props.name.trim()) {
 const activeRoomId = props.roomId?.trim() || 'default-room'
 const yjsReady = ref(false)
 const isUploading = ref(false)
+const isInitialLoad = ref(true) // 초기 로드 플래그
 
 // ========== Yjs & File Systems ==========
 const {
@@ -177,14 +178,15 @@ watch(
     const recentMessages = messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD)
     await processAutoDownload(recentMessages)
 
-    // 새 메시지 알림 (본인 메시지가 아니고, 메시지가 증가한 경우)
-    if (newMessages.length > (oldMessages?.length || 0)) {
+    // 새 메시지 알림 (초기 로드가 아니고, 본인 메시지가 아니고, 메시지가 증가한 경우)
+    if (!isInitialLoad.value && oldMessages && newMessages.length > oldMessages.length) {
       const newMessage = newMessages[newMessages.length - 1]
       // 본인이 보낸 메시지가 아닐 때만 알림 표시
       if (newMessage && newMessage.authorTrueUuid !== me) {
         const authorName = newMessage.authorName || 'Unknown'
         const text = newMessage.text || '파일을 전송했습니다'
-        showNotification(authorName, text)
+        console.log('[알림] 새 메시지 알림 표시:', { authorName, text })
+        showNotification(authorName, text, newMessage.id)
       }
     }
   },
@@ -203,11 +205,17 @@ onMounted(async () => {
   // P2P 파일 요청 리스너 설정
   setupFileRequestListener()
 
-  // 초기 이미지 자동 다운로드
+  // 초기 이미지 자동 다운로드 및 초기 로드 완료 처리
   await nextTick()
   setTimeout(async () => {
     const recentMessages = messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD)
     await processAutoDownload(recentMessages)
+
+    // 초기 동기화 완료 후 플래그 해제 (이후부터 알림 활성화)
+    setTimeout(() => {
+      isInitialLoad.value = false
+      console.log('[알림] 초기 로드 완료 - 알림 활성화')
+    }, 1000)
   }, 500)
 })
 </script>
