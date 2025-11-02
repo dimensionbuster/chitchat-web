@@ -9,6 +9,10 @@ const DEFAULT_VISIBLE_MESSAGES = 50
 const LOAD_MORE_COUNT = 30
 const ROOM_ID = 'default-room'
 
+// 성능 최적화 설정
+const SORT_DEBOUNCE_MS = 100  // 디바운싱: 100ms 내 여러 변경사항을 한 번에 처리
+const SORT_WINDOW = 300        // 대용량 메시지 시 최근 N개만 정렬
+
 const SIGNAL_URLS = (import.meta.env.VITE_SIGNAL_URLS || '')
   .split(',')
   .map((url: string) => url.trim())
@@ -22,76 +26,89 @@ const iceServers = [
 
 const yjsInstances = new Map<string, ReturnType<typeof createYjsInstance>>()
 
-const getAllMessages = (messages: Y.Array<ChatMessage>) => {
-  return messages.toArray()
-}
-
 const waitForSync = (provider: WebrtcProvider) =>
   new Promise<void>((resolve) => {
-    let resolved = false
-    const resolveOnce = () => {
-      if (!resolved) {
-        resolved = true
-        resolve()
-      }
-    }
-
     provider.on('synced', (event: { synced: boolean }) => {
-      if (event.synced) {
-        console.log('[useYjs] WebRTC 동기화 완료')
-        resolveOnce()
-      }
+      if (event.synced) resolve()
     })
-
-    // 타임아웃을 1초로 단축 (IndexedDB에서 이미 로드했으므로)
-    setTimeout(() => {
-      console.log('[useYjs] WebRTC 동기화 타임아웃 - 계속 진행 (로컬 데이터 사용)')
-      resolveOnce()
-    }, 1000)
+    setTimeout(resolve, 1000) // 1초 타임아웃
   })
 
 async function createYjsInstance(roomId: string) {
   const doc = new Y.Doc()
-  const messages = doc.getArray<ChatMessage>('messages')
+
+  // 🔄 마이그레이션: Y.Array → Y.Map (기존 데이터 있으면 자동 전환)
+  const oldMessages = doc.getArray<ChatMessage>('messages')
+  const messagesMap = doc.getMap<ChatMessage>('messagesMap')
   const files = doc.getMap<FileMeta>('files')
 
-  // 전체 메시지 배열 (읽기 전용)
-  const internalMessagesRef = ref(getAllMessages(messages))
+  // 정렬된 전체 메시지 배열 (타임스탬프 순)
+  const sortedMessagesRef = ref<ChatMessage[]>([])
 
   // 현재 표시할 메시지 수 (기본 50개)
   const visibleMessageCount = ref(DEFAULT_VISIBLE_MESSAGES)
 
   // 표시할 메시지 (최근 N개)
-  const displayedMessages = ref(internalMessagesRef.value.slice(-DEFAULT_VISIBLE_MESSAGES))
+  const displayedMessages = ref<ChatMessage[]>([])
 
-  messages.observe(() => {
-    internalMessagesRef.value = getAllMessages(messages)
-    // 사용자가 최신 메시지를 보고 있을 때만 자동으로 업데이트
-    if (visibleMessageCount.value >= internalMessagesRef.value.length ||
-        visibleMessageCount.value === DEFAULT_VISIBLE_MESSAGES) {
-      displayedMessages.value = internalMessagesRef.value.slice(-visibleMessageCount.value)
+  // 🔥 디바운싱을 위한 타이머
+  let sortTimeout: ReturnType<typeof setTimeout> | null = null
+
+  // 🔥 최적화된 정렬 함수 (디바운싱 + 부분 정렬)
+  const updateSortedMessages = () => {
+    const allMessages = Array.from(messagesMap.values())
+
+    // 메시지가 적으면 전체 정렬
+    if (allMessages.length <= SORT_WINDOW) {
+      sortedMessagesRef.value = allMessages.sort((a, b) => a.ts - b.ts)
+    } else {
+      // 대용량: 최근 메시지만 정렬 (오래된 메시지는 이미 정렬되어 있다고 가정)
+      const oldMessages = allMessages.slice(0, -SORT_WINDOW)
+      const recentMessages = allMessages.slice(-SORT_WINDOW).sort((a, b) => a.ts - b.ts)
+      sortedMessagesRef.value = [...oldMessages, ...recentMessages]
     }
-    console.debug('[useYjs] messages updated:', messages.length)
+
+    // 사용자가 최신 메시지를 보고 있을 때만 자동으로 업데이트
+    if (visibleMessageCount.value >= sortedMessagesRef.value.length ||
+        visibleMessageCount.value === DEFAULT_VISIBLE_MESSAGES) {
+      displayedMessages.value = sortedMessagesRef.value.slice(-visibleMessageCount.value)
+    }
+  }
+
+  // 🔥 디바운스된 observe: 연속된 변경사항을 그룹화하여 한 번만 정렬
+  messagesMap.observe(() => {
+    if (sortTimeout) clearTimeout(sortTimeout)
+    sortTimeout = setTimeout(() => {
+      updateSortedMessages()
+    }, SORT_DEBOUNCE_MS)
   })
 
   const messagesRef = readonly(displayedMessages)
 
-  // 🔥 IndexedDB를 먼저 초기화하여 로컬 데이터 로드
-  console.log('[useYjs] IndexedDB 초기화 중...')
+  // IndexedDB 로드
+  console.log('[#1] Yjs 초기화: IndexedDB 로드 중...')
   const persistence = new IndexeddbPersistence(`ydb-${roomId}`, doc)
 
-  // IndexedDB 로드 완료 대기
   await new Promise<void>((resolve) => {
     persistence.once('synced', () => {
-      console.log('[useYjs] ✅ IndexedDB 로드 완료:', {
-        messages: messages.length,
-        files: files.size,
-      })
+      // 마이그레이션: Y.Array → Y.Map
+      if (oldMessages.length > 0 && messagesMap.size === 0) {
+        doc.transact(() => {
+          oldMessages.toArray().forEach(msg => {
+            const messageId = msg.id || `${msg.ts}-${crypto.randomUUID()}`
+            messagesMap.set(messageId, { ...msg, id: messageId })
+          })
+        })
+      }
+
+      updateSortedMessages()
+      console.log(`[#2] IndexedDB 로드 완료: 메시지 ${messagesMap.size}개, 파일 ${files.size}개`)
       resolve()
     })
   })
 
-  // IndexedDB 로드 후 WebRTC provider 시작 (백그라운드로 동기화)
+  // WebRTC provider 시작 (백그라운드 동기화)
+  console.log('[#3] WebRTC Provider 생성 - 백그라운드 동기화 시작')
   const provider = new WebrtcProvider(roomId, doc, {
     signaling: SIGNAL_URLS,
     peerOpts: { config: { iceServers } },
@@ -99,95 +116,89 @@ async function createYjsInstance(roomId: string) {
     filterBcConns: true,
   })
 
-  console.log('[useYjs] WebRTC provider 생성됨 - 백그라운드 동기화 시작')
-
-  // WebRTC 동기화를 기다리지 않고 즉시 진행 (로컬 데이터로 시작)
-  // 백그라운드에서 피어와 동기화됨
-  waitForSync(provider).then(() => {
-    console.log('[useYjs] 최종 문서 상태:', {
-      messages: messages.length,
-      files: files.size,
-    })
-  })
-
-  console.log('[useYjs] 초기 로컬 데이터로 시작:', {
-    messages: messages.length,
-    files: files.size,
-  })
+  waitForSync(provider)
 
   _setupProviderListeners(provider)
 
   const sendTextMessage = (authorTrueUuid: string, authorName: string, text: string) => {
     if (!text.trim()) return
-    messages.push([{ id: crypto.randomUUID(), authorTrueUuid, authorName, text, ts: Date.now() }])
+    const timestamp = Date.now()
+    const messageId = `${timestamp}-${crypto.randomUUID()}`
+    messagesMap.set(messageId, {
+      id: messageId,
+      authorTrueUuid,
+      authorName,
+      text,
+      ts: timestamp,
+    })
   }
 
   const attachFileMeta = (fileId: string, meta: FileMeta, authorTrueUuid: string, authorName = authorTrueUuid) => {
     files.set(fileId, meta)
-    messages.push([{ id: crypto.randomUUID(), authorTrueUuid, authorName, fileId, ts: Date.now() }])
+    const timestamp = Date.now()
+    const messageId = `${timestamp}-${crypto.randomUUID()}`
+    messagesMap.set(messageId, {
+      id: messageId,
+      authorTrueUuid,
+      authorName,
+      fileId,
+      ts: timestamp,
+    })
   }
 
-  const requestFile = (fileId: string, requesterUuid: string, receivedChunks: number[] = []) => {
-    console.log('[Yjs] 파일 요청:', { fileId, requesterUuid, receivedChunksCount: receivedChunks.length })
-    provider.awareness.setLocalStateField('fileRequest', { fileId, requesterUuid, timestamp: Date.now(), receivedChunks })
+  const requestFile = (fileId: string, requesterUuid: string, receivedChunks: number[] = [], targetUuid?: string) => {
+    const resumeMsg = receivedChunks.length ? ` (이어받기: ${receivedChunks.length}개)` : ''
+    const targetMsg = targetUuid ? ` → ${targetUuid.slice(-8)}` : ''
+    console.log(`[#4] 파일 요청${resumeMsg}${targetMsg}: ${fileId}`)
+    provider.awareness.setLocalStateField('fileRequest', { fileId, requesterUuid, timestamp: Date.now(), receivedChunks, targetUuid })
     setTimeout(() => provider.awareness.setLocalStateField('fileRequest', null), 5000)
   }
 
-  const respondFile = (fileId: string, fileData: string, targetUuid: string, skipChunks: number[] = []) => {
-    _respondFile(provider, doc, files, fileId, fileData, targetUuid, skipChunks)
+  const respondFile = (fileId: string, fileData: string, targetUuid: string, skipChunks: number[] = [], onComplete?: () => void) => {
+    _respondFile(provider, doc, files, fileId, fileData, targetUuid, skipChunks, onComplete)
   }
 
   const getTransferMap = (key: string) => doc.getMap<string>(key)
 
   // 이전 메시지 로드 (스크롤 위로)
   const loadMoreMessages = () => {
-    const totalMessages = internalMessagesRef.value.length
-    if (visibleMessageCount.value >= totalMessages) {
-      console.log('[useYjs] 더 이상 로드할 메시지가 없습니다')
-      return false
-    }
+    const totalMessages = sortedMessagesRef.value.length
+    if (visibleMessageCount.value >= totalMessages) return false
 
     const newCount = Math.min(visibleMessageCount.value + LOAD_MORE_COUNT, totalMessages)
     visibleMessageCount.value = newCount
-    displayedMessages.value = internalMessagesRef.value.slice(-newCount)
-
-    console.log(`[useYjs] 메시지 로드: ${newCount}/${totalMessages}`)
+    displayedMessages.value = sortedMessagesRef.value.slice(-newCount)
     return true
   }
 
   // 최신 메시지로 리셋
   const resetToLatest = () => {
     visibleMessageCount.value = DEFAULT_VISIBLE_MESSAGES
-    displayedMessages.value = internalMessagesRef.value.slice(-DEFAULT_VISIBLE_MESSAGES)
-    console.log('[useYjs] 최신 메시지로 리셋')
+    displayedMessages.value = sortedMessagesRef.value.slice(-DEFAULT_VISIBLE_MESSAGES)
   }
 
   // 현재 최신 메시지를 보고 있는지 확인
   const isViewingLatest = () => {
     return visibleMessageCount.value === DEFAULT_VISIBLE_MESSAGES ||
-           visibleMessageCount.value >= internalMessagesRef.value.length
+           visibleMessageCount.value >= sortedMessagesRef.value.length
   }
 
   const forceResync = async () => {
-    console.log('[useYjs] 🔄 강제 재동기화 시작')
     try {
       provider.disconnect()
       provider.destroy()
-
       doc.transact(() => {
-        messages.delete(0, messages.length)
+        messagesMap.clear()
         files.clear()
       })
-
       await persistence.clearData()
       persistence.destroy()
       yjsInstances.delete(roomId)
       doc.destroy()
-
-      console.log('[useYjs] ✅ 재동기화 준비 완료')
+      console.log('[Yjs] 재동기화 완료')
       return true
     } catch (error) {
-      console.error('[useYjs] ❌ 재동기화 실패:', error)
+      console.error('[Yjs] 재동기화 실패:', error)
       return false
     }
   }
@@ -196,7 +207,7 @@ async function createYjsInstance(roomId: string) {
     doc,
     provider,
     persistence,
-    messages,
+    messagesMap,
     messagesRef,
     files,
     sendTextMessage,
@@ -216,95 +227,50 @@ async function createYjsInstance(roomId: string) {
 const setUserAwareness = (provider: WebrtcProvider, userUuid?: string) => {
   if (userUuid) {
     provider.awareness.setLocalStateField('userUuid', userUuid)
-    console.log(`[useYjs] UUID 설정: ${userUuid}`)
   }
 }
 
 export async function useYjs(roomId = ROOM_ID, userUuid?: string) {
   const cached = yjsInstances.get(roomId)
   if (cached) {
-    console.log(`[useYjs] ✅ 기존 연결 재사용: ${roomId}`)
     const instance = await cached
     setUserAwareness(instance.provider, userUuid)
-
     if (!instance.provider.connected) {
-      console.log(`[useYjs] 🔄 재연결: ${roomId}`)
       instance.provider.connect()
     }
     return instance
   }
 
-  console.log(`[useYjs] 🆕 새 연결 생성: ${roomId}`)
   const instancePromise = createYjsInstance(roomId)
   yjsInstances.set(roomId, instancePromise)
   const instance = await instancePromise
   setUserAwareness(instance.provider, userUuid)
-
   return instance
 }
 
 // ========== 헬퍼 함수들 ==========
 
 function _setupProviderListeners(provider: WebrtcProvider) {
-  let wasConnected = false
-
   provider.on('peers', (event: { added: string[]; removed: string[]; webrtcPeers: string[] }) => {
-    console.log('[WebRTC] Peers:', { added: event.added.length, removed: event.removed.length, total: event.webrtcPeers.length })
-
     if (event.added.length > 0) {
-      const messages = provider.doc.getArray('messages')
-      console.log(`[WebRTC] ✅ 새 피어 연결 (메시지: ${messages.length}개)`)
-
-      if (wasConnected && event.webrtcPeers.length > 0) {
-        const currentState = provider.awareness.getLocalState()
-        if (currentState && Object.keys(currentState).length > 0) {
-          provider.awareness.setLocalState(currentState)
-        }
-      }
+      console.log(`[#6] 피어 연결: ${event.webrtcPeers.length}명`)
     }
-
-    wasConnected = event.webrtcPeers.length > 0
   })
 
   provider.on('synced', (event: { synced: boolean }) => {
     if (event.synced) {
-      const messages = provider.doc.getArray('messages')
-      const files = provider.doc.getMap('files')
-      console.log(`[WebRTC] ✅ 동기화 완료 (메시지: ${messages.length}, 파일: ${files.size})`)
+      console.log('[#7] Yjs 동기화 완료')
     }
-  })
-
-  provider.on('status', (event: { connected: boolean }) => {
-    console.log(`[WebRTC] ${event.connected ? '🟢 연결됨' : '🔴 끊김'}`)
-
-    if (event.connected && wasConnected === false) {
-      setTimeout(() => {
-        const messages = provider.doc.getArray('messages')
-        console.log(`[WebRTC] 연결 복구 (메시지: ${messages.length}개)`)
-      }, 1000)
-    }
-  })
-
-  provider.awareness.on('change', () => {
-    const clientIds = Array.from(provider.awareness.getStates().keys())
-    console.log(`[WebRTC] Awareness 변경 (clients: ${clientIds.length})`)
   })
 }
 
 const CHUNK_SIZE = 64 * 1024
-const BASE_DELAY = 10
-const MAX_DELAY = 100
+const SEND_DELAY = 10 // 청크 전송 간 고정 딜레이
 
 const checkTargetPeerConnected = (provider: WebrtcProvider, targetUuid: string): boolean => {
-  for (const [clientId, state] of provider.awareness.getStates()) {
-    if (clientId === provider.awareness.clientID) continue
+  for (const [, state] of provider.awareness.getStates()) {
     const stateObj = state as Record<string, unknown>
-    const fileRequest = stateObj.fileRequest as { requesterUuid?: string } | undefined
-    const user = stateObj.user as { uuid?: string } | undefined
-
-    if (fileRequest?.requesterUuid === targetUuid || user?.uuid === targetUuid || stateObj.userUuid === targetUuid) {
-      return true
-    }
+    if (stateObj.userUuid === targetUuid) return true
   }
   return false
 }
@@ -317,33 +283,34 @@ function _respondFile(
   fileData: string,
   targetUuid: string,
   skipChunks: number[] = [],
+  onComplete?: () => void,
 ) {
   const timestamp = Date.now()
   const skipSet = new Set(skipChunks)
   const totalChunks = Math.ceil(fileData.length / CHUNK_SIZE)
   const chunksToSend = totalChunks - skipChunks.length
 
-  console.log(`[useYjs] 파일 전송: ${fileId} to ${targetUuid} (${chunksToSend}/${totalChunks} 청크, ${(fileData.length / 1024 / 1024).toFixed(2)}MB)`)
+  console.log(`[#5] Yjs 파일 전송 시작: ${chunksToSend}/${totalChunks} 청크, ${(fileData.length / 1024).toFixed(0)}KB`)
 
   const { startTransfer, updateProgress, completeTransfer, cancelTransfer } = useFileTransferProgress()
   const meta = files.get(fileId)
-  startTransfer(fileId, meta?.name || fileId, 'upload', totalChunks, fileData.length, false)
+  const transferKey = `${fileId}-${targetUuid}`
+  startTransfer(transferKey, meta?.name || fileId, 'upload', totalChunks, fileData.length, false)
 
   provider.awareness.setLocalStateField('fileResponse', { fileId, targetUuid, timestamp, totalChunks, chunkSize: CHUNK_SIZE })
 
   const transferMap = doc.getMap(`transfer-${fileId}-${timestamp}`)
   let currentChunk = 0
-  let lastSendTime = Date.now()
   let transferCancelled = false
   let targetPeerStillConnected = true
 
   const abortTransfer = (reason: string) => {
     if (transferCancelled) return
     transferCancelled = true
-    console.warn(`[useYjs] ⚠️ 전송 중단: ${fileId} - ${reason}`)
+    console.warn(`[Yjs] 전송 중단: ${reason}`)
     provider.awareness.setLocalStateField('fileResponse', null)
     transferMap.clear()
-    cancelTransfer?.(fileId)
+    cancelTransfer?.(transferKey)
   }
 
   const awarenessChangeHandler = () => {
@@ -351,12 +318,10 @@ function _respondFile(
     const stillConnected = checkTargetPeerConnected(provider, targetUuid)
 
     if (targetPeerStillConnected && !stillConnected) {
-      console.warn(`[useYjs] 대상 피어 끊김: ${targetUuid}`)
       targetPeerStillConnected = false
-
       setTimeout(() => {
         if (!transferCancelled && !checkTargetPeerConnected(provider, targetUuid)) {
-          abortTransfer(`대상 피어 연결 끊김`)
+          abortTransfer('피어 연결 끊김')
           provider.awareness.off('change', awarenessChangeHandler)
         } else {
           targetPeerStillConnected = true
@@ -376,35 +341,20 @@ function _respondFile(
   provider.awareness.on('change', awarenessChangeHandler)
   provider.on('peers', peersChangeHandler)
 
-  const calculateDelay = (chunkIndex: number) => {
-    const now = Date.now()
-    const elapsed = now - lastSendTime
-    lastSendTime = now
-
-    const adaptiveDelay = Math.min(BASE_DELAY + Math.floor(totalChunks / 20), MAX_DELAY)
-    const backoffDelay = elapsed > 20 ? elapsed * 0.5 : 0
-    const finalDelay = Math.min(adaptiveDelay + backoffDelay, MAX_DELAY)
-
-    if (chunkIndex % 50 === 0) {
-      console.log(`[useYjs] 딜레이: ${finalDelay.toFixed(1)}ms (이전: ${elapsed}ms)`)
-    }
-
-    return finalDelay
-  }
-
   const sendNextChunk = () => {
     if (transferCancelled) return
 
     if (currentChunk >= totalChunks) {
       transferMap.set('complete', true)
-      console.log(`[useYjs] ✅ 전송 완료: ${fileId} (${totalChunks}개 청크)`)
-      completeTransfer(fileId)
+      console.log(`[#9] Yjs 전송 완료: ${totalChunks}개 청크`)
+      completeTransfer(transferKey)
       provider.off('peers', peersChangeHandler)
       provider.awareness.off('change', awarenessChangeHandler)
 
       setTimeout(() => {
         provider.awareness.setLocalStateField('fileResponse', null)
         setTimeout(() => transferMap.clear(), 60000)
+        if (onComplete) onComplete()
       }, 5000)
       return
     }
@@ -418,15 +368,14 @@ function _respondFile(
     const start = currentChunk * CHUNK_SIZE
     const end = Math.min(start + CHUNK_SIZE, fileData.length)
     transferMap.set(`chunk-${currentChunk}`, fileData.substring(start, end))
-    updateProgress(fileId, currentChunk + 1)
+    updateProgress(transferKey, currentChunk + 1)
 
-    if (currentChunk % 10 === 0 || currentChunk === totalChunks - 1) {
-      console.log(`[useYjs] 청크 ${currentChunk + 1}/${totalChunks} (${(((currentChunk + 1) / totalChunks) * 100).toFixed(1)}%)`)
+    if (currentChunk % 20 === 0 || currentChunk === totalChunks - 1) {
+      console.log(`[#8] Yjs 전송: ${currentChunk + 1}/${totalChunks} (${(((currentChunk + 1) / totalChunks) * 100).toFixed(0)}%)`)
     }
 
-    const delay = calculateDelay(currentChunk)
     currentChunk++
-    setTimeout(sendNextChunk, delay)
+    setTimeout(sendNextChunk, SEND_DELAY)
   }
 
   sendNextChunk()

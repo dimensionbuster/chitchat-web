@@ -12,6 +12,7 @@ defineProps<{
   loadingImages: Set<string>
   failedDownloads: Map<string, string>
   isReady: boolean
+  getUserProfilePicture?: (userId: string) => string | null
 }>()
 
 const emit = defineEmits<{
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   requestDownload: [fileId: string]
   loadMore: []
   resetToLatest: []
+  viewProfile: [userId: string]
 }>()
 
 const feedContainer = ref<HTMLElement | null>(null)
@@ -97,8 +99,10 @@ defineExpose({ scrollToBottom })
         :imageUrl="m.fileId ? imageUrls.get(m.fileId) : undefined"
         :isImageLoading="m.fileId ? loadingImages.has(m.fileId) : false"
         :errorMessage="m.fileId ? failedDownloads.get(m.fileId) : undefined"
+        :profilePicture="getUserProfilePicture ? getUserProfilePicture(m.authorTrueUuid) : null"
         @download="emit('download', $event)"
         @requestDownload="emit('requestDownload', $event)"
+        @viewProfile="emit('viewProfile', $event)"
       />
     </ul>
 

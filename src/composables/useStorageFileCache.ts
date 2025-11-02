@@ -1,5 +1,10 @@
-// IndexedDB를 사용한 로컬 파일 캐시
-// Helia의 Blockstore와 별도로 원본 파일을 저장
+/**
+ * useStorageFileCache
+ *
+ * IndexedDB를 사용하여 파일을 로컬에 캐시하는 스토리지 관리
+ * - 파일 캐시 저장/조회
+ * - Blob 형태로 저장
+ */
 
 const DB_NAME = 'chitchat-file-cache'
 const STORE_NAME = 'files'
@@ -36,9 +41,8 @@ export async function cacheFile(cid: string, blob: Blob) {
       tx.oncomplete = resolve
       tx.onerror = () => reject(tx.error)
     })
-    console.log(`[FileCache] ✅ 파일 캐시 저장: ${cid}`)
   } catch (error) {
-    console.error('[FileCache] 캐시 저장 실패:', error)
+    console.error('[StorageFileCache] 캐시 저장 실패:', error)
   }
 }
 
@@ -50,17 +54,11 @@ export async function getCachedFile(cid: string): Promise<Blob | null> {
     const request = store.get(cid)
 
     return new Promise((resolve, reject) => {
-      request.onsuccess = () => {
-        const blob = request.result
-        if (blob) {
-          console.log(`[FileCache] ✅ 캐시에서 로드: ${cid}`)
-        }
-        resolve(blob || null)
-      }
+      request.onsuccess = () => resolve(request.result || null)
       request.onerror = () => reject(request.error)
     })
   } catch (error) {
-    console.error('[FileCache] 캐시 로드 실패:', error)
+    console.error('[StorageFileCache] 캐시 로드 실패:', error)
     return null
   }
 }

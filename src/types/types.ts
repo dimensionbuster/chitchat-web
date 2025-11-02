@@ -31,3 +31,32 @@ export type PartialDownloadState = {
   timestamp: number // 마지막 업데이트 시각
   transferKey: string // transfer-{fileId}-{timestamp}
 }
+
+export type ChatroomOption = {
+  theme: 'light' | 'dark'
+  fontSize: number
+  showTimestamps: boolean
+  showNotifications: boolean
+  soundEffects: boolean
+  [key: string]: unknown // 확장 가능
+}
+
+/**
+ * 프로필 사진 데이터 (썸네일)
+ */
+export type ProfilePicture = {
+  userId: string          // user-{uuid}
+  imageData: string       // base64 인코딩된 이미지 데이터 (압축됨)
+  timestamp: number       // 업데이트 시각
+  size: number            // 데이터 크기 (bytes)
+  originalFileId?: string // 원본 파일 ID (파일 전송으로 다운로드 가능)
+}
+
+/**
+ * 프로필 사진 awareness 메타데이터
+ */
+export type ProfilePictureAwareness = {
+  userId: string
+  hasProfilePicture: boolean
+  timestamp: number
+}

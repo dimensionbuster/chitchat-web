@@ -1,52 +1,52 @@
+/**
+ * useFileActions
+ *
+ * 파일 관련 사용자 액션 처리
+ * - 파일 다운로드 (저장)
+ * - 파일 요청 및 다운로드 트리거
+ */
+
 import type { Map as YMap } from 'yjs'
 import type { FileMeta } from '@/types/types'
-import { useFileShare } from './useFileShare'
-import { getCachedFile } from './useLocalFileCache'
+import { useFileEncoder } from './useFileEncoder'
+import { getCachedFile } from './useStorageFileCache'
 
-/**
- * 파일 다운로드 (저장) 유틸리티
- */
-export function useFileDownload(
+export function useFileActions(
   files: YMap<FileMeta>,
   requestFileP2P: (fileId: string) => Promise<Blob>,
 ) {
-  const { getFileBlob } = useFileShare()
+  const { getFileBlob } = useFileEncoder()
 
   /**
-   * 파일을 다운로드하여 저장
+   * 파일을 다운로드하여 로컬에 저장
+   * 1. 캐시 확인
+   * 2. 없으면 P2P로 요청
+   * 3. 메타데이터에서 직접 추출
    */
   async function downloadFile(fileId: string) {
     const meta = files.get(fileId)
-    if (!meta) {
-      console.error('파일 메타데이터를 찾을 수 없습니다:', fileId)
-      return
-    }
+    if (!meta) return
 
     let blob: Blob
 
-    // fileData가 없으면 (큰 파일) P2P로 요청
     if (!meta.fileData) {
-      console.log(`[P2P] 큰 파일 요청 (다운로드): ${fileId}`)
-
-      // 캐시에서 먼저 확인
+      // 큰 파일: 캐시 또는 P2P 요청
       const cached = await getCachedFile(fileId)
       if (cached) {
         blob = cached
       } else {
-        // P2P로 파일 요청
         blob = await requestFileP2P(fileId)
       }
     } else {
-      // fileData가 있으면 (작은 파일) 바로 변환
+      // 작은 파일: 메타데이터에서 직접 추출
       blob = await getFileBlob(fileId, meta)
     }
 
-    // 파일 다운로드 트리거
     triggerDownload(blob, meta.name ?? fileId)
   }
 
   /**
-   * Blob을 파일로 다운로드
+   * Blob을 파일로 다운로드 (브라우저 저장 대화상자)
    */
   function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
@@ -59,5 +59,6 @@ export function useFileDownload(
 
   return {
     downloadFile,
+    triggerDownload,
   }
 }

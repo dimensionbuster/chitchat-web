@@ -10,6 +10,7 @@ defineProps<{
 const emit = defineEmits<{
   send: [message: string]
   uploadFile: [file: File]
+  openProfileSettings: []
 }>()
 
 const input = ref('')
@@ -31,6 +32,14 @@ const onFileChange = (e: Event) => {
 
 <template>
   <div class="chat-input">
+    <button
+      @click="emit('openProfileSettings')"
+      :disabled="disabled"
+      class="profile-button"
+      title="프로필 설정"
+    >
+      👤
+    </button>
     <input
       v-model="input"
       placeholder="메시지…"
@@ -76,6 +85,26 @@ const onFileChange = (e: Event) => {
 }
 
 .send-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.profile-button {
+  padding: 6px 12px;
+  cursor: pointer;
+  background: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 18px;
+  transition: opacity 0.2s;
+}
+
+.profile-button:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.profile-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

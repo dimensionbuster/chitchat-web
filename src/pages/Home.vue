@@ -1,7 +1,9 @@
 <script setup lang="ts">
 defineOptions({ name: 'HomePage' })
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useProfilePicture } from '@/composables/useProfilePicture'
+import ProfilePictureUpload from '@/components/ProfilePictureUpload.vue'
 
 const router = useRouter()
 
@@ -11,6 +13,38 @@ const name = ref(localStorage.getItem('name') || '')
 if (!localStorage.getItem('uuid')) {
   localStorage.setItem('uuid', crypto.randomUUID())
 }
+
+const uuid = localStorage.getItem('uuid')!
+const myUserId = `user-${uuid}`
+
+// 프로필 사진 기능 (네트워크 연결 전이므로 provider는 null)
+const {
+  myProfilePicture,
+  setMyProfilePicture,
+  deleteMyProfilePicture,
+  initializeProfilePictures
+} = useProfilePicture(null, myUserId)
+
+const handleProfileUpload = async (file: File) => {
+  try {
+    await setMyProfilePicture(file)
+    alert('프로필 사진이 설정되었습니다.')
+  } catch (error) {
+    console.error('[Home] 프로필 설정 실패:', error)
+    alert('프로필 사진 설정에 실패했습니다.')
+  }
+}
+
+const handleProfileDelete = async () => {
+  try {
+    await deleteMyProfilePicture()
+    alert('프로필 사진이 삭제되었습니다.')
+  } catch (error) {
+    console.error('[Home] 프로필 삭제 실패:', error)
+    alert('프로필 사진 삭제에 실패했습니다.')
+  }
+}
+
 const goChat = () => {
   const trimmedRoomId = roomId.value.trim()
   if (trimmedRoomId === '') {
@@ -32,12 +66,28 @@ const goChat = () => {
     router.push({ name: 'ChatRoom', query: q })
   }
 }
+
+onMounted(async () => {
+  // 로컬 프로필 로드
+  await initializeProfilePictures()
+})
 </script>
 
 <template>
   <div style="height: 100%; display: grid; place-items: center; padding: 24px">
-    <div style="width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 12px">
+    <div style="width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 16px">
       <h1>ChitChat - decentralized</h1>
+
+      <!-- 프로필 사진 설정 -->
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <h3 style="margin: 0; font-size: 16px">프로필 사진</h3>
+        <ProfilePictureUpload
+          :currentImage="myProfilePicture"
+          @upload="handleProfileUpload"
+          @delete="handleProfileDelete"
+        />
+      </div>
+
       <label style="display: flex; flex-direction: column; gap: 6px">
         <span>Room ID</span>
         <input

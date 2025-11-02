@@ -19,6 +19,13 @@ const transfers = reactive<Record<string, FileTransferProgress>>({})
 // 변경 트리거용 카운터 (강제 리렌더링)
 const updateCounter = ref(0)
 
+// 업로드 큐 정보 (전역 상태)
+const uploadQueueInfo = reactive({
+  activeCount: 0,
+  queuedCount: 0,
+  maxConcurrent: 2,
+})
+
 /**
  * 파일 전송 진척도를 추적하는 composable
  */
@@ -32,7 +39,7 @@ export function useFileTransferProgress() {
     type: 'upload' | 'download',
     totalChunks: number,
     totalBytes: number,
-    isResumable = true, // 기본적으로 다운로드는 이어받기 가능
+    isResumable = true,
   ) {
     transfers[fileId] = {
       fileId,
@@ -43,10 +50,9 @@ export function useFileTransferProgress() {
       totalBytes,
       isComplete: false,
       startTime: Date.now(),
-      isResumable: type === 'download' && isResumable, // 다운로드만 이어받기 지원
+      isResumable: type === 'download' && isResumable,
     }
     updateCounter.value++
-    console.log(`[Progress] ${type} 시작: ${fileName} (${totalChunks} 청크)`)
   }
 
   /**
@@ -58,12 +64,6 @@ export function useFileTransferProgress() {
 
     transfer.receivedChunks = receivedChunks
     updateCounter.value++
-
-    // 10% 단위로만 로그 출력 (로그 스팸 방지)
-    const progress = (receivedChunks / transfer.totalChunks) * 100
-    if (receivedChunks % Math.ceil(transfer.totalChunks / 10) === 0) {
-      console.log(`[Progress] ${transfer.type} 진행: ${transfer.fileName} ${progress.toFixed(1)}%`)
-    }
   }
 
   /**
@@ -77,44 +77,25 @@ export function useFileTransferProgress() {
     transfer.receivedChunks = transfer.totalChunks
     updateCounter.value++
 
-    const elapsed = Date.now() - transfer.startTime
-    const speed = (transfer.totalBytes / 1024 / 1024 / (elapsed / 1000)).toFixed(2)
-
-    console.log(
-      `[Progress] ✅ ${transfer.type} 완료: ${transfer.fileName} (${elapsed}ms, ${speed}MB/s)`,
-    )
-
-    // 3초 후 목록에서 제거
+    // 완료된 전송은 5초 후에 제거 (큐 UI가 사라지지 않도록)
     setTimeout(() => {
       delete transfers[fileId]
       updateCounter.value++
-    }, 3000)
+    }, 5000)
   }
 
-  /**
-   * 전송 실패
-   */
   function failTransfer(fileId: string) {
     const transfer = transfers[fileId]
     if (!transfer) return
 
-    console.error(`[Progress] ❌ ${transfer.type} 실패: ${transfer.fileName}`)
-
-    // 즉시 제거
     delete transfers[fileId]
     updateCounter.value++
   }
 
-  /**
-   * 전송 취소
-   */
   function cancelTransfer(fileId: string) {
     const transfer = transfers[fileId]
     if (!transfer) return
 
-    console.warn(`[Progress] 🚫 ${transfer.type} 취소: ${transfer.fileName}`)
-
-    // 즉시 제거
     delete transfers[fileId]
     updateCounter.value++
   }
@@ -147,8 +128,18 @@ export function useFileTransferProgress() {
     return !!transfer && !transfer.isComplete
   }
 
+  /**
+   * 업로드 큐 상태 업데이트 (useFileTransfer에서 호출)
+   */
+  function updateUploadQueue(activeCount: number, queuedCount: number, maxConcurrent = 2) {
+    uploadQueueInfo.activeCount = activeCount
+    uploadQueueInfo.queuedCount = queuedCount
+    uploadQueueInfo.maxConcurrent = maxConcurrent
+  }
+
   return {
     transfers, // reactive Record
+    uploadQueueInfo, // 업로드 큐 정보
     startTransfer,
     updateProgress,
     completeTransfer,
@@ -157,5 +148,6 @@ export function useFileTransferProgress() {
     getProgress,
     getProgressPercent,
     isTransferring,
+    updateUploadQueue,
   }
 }

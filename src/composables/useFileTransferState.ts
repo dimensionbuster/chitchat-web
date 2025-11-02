@@ -1,3 +1,13 @@
+/**
+ * useFileTransferState
+ *
+ * 파일 전송 상태 관리 (부분 다운로드/청크 관리)
+ * - 파일 전송 중단 시 상태 저장
+ * - 이어받기 지원
+ * - 청크 단위 진행 상황 추적
+ * - IndexedDB를 통한 영구 저장
+ */
+
 import type { PartialDownloadState } from '@/types/types'
 
 const DB_NAME = 'chitchat-partial-downloads'
@@ -46,7 +56,7 @@ async function getDB() {
  * 부분 다운로드 상태를 관리하는 composable
  * 연결이 끊겨도 진행 상태를 유지하고 이어받기 가능
  */
-export function usePartialDownload() {
+export function useFileTransferState() {
   /**
    * 다운로드 상태 저장
    */
@@ -74,12 +84,8 @@ export function usePartialDownload() {
         tx.oncomplete = resolve
         tx.onerror = () => reject(tx.error)
       })
-
-      console.log(
-        `[PartialDownload] 상태 저장됨: ${state.fileId} (${state.receivedChunks.size}/${state.totalChunks} 청크)`,
-      )
     } catch (error) {
-      console.error('[PartialDownload] 상태 저장 실패:', error)
+      console.error('[FileTransferState] 상태 저장 실패:', error)
       throw error
     }
   }
@@ -117,16 +123,12 @@ export function usePartialDownload() {
             transferKey: data.transferKey,
           }
 
-          console.log(
-            `[PartialDownload] 상태 불러옴: ${fileId} (${state.receivedChunks.size}/${state.totalChunks} 청크)`,
-          )
-
           resolve(state)
         }
         request.onerror = () => reject(request.error)
       })
     } catch (error) {
-      console.error('[PartialDownload] 상태 불러오기 실패:', error)
+      console.error('[FileTransferState] 상태 불러오기 실패:', error)
       return null
     }
   }
@@ -144,8 +146,6 @@ export function usePartialDownload() {
       tx.oncomplete = resolve
       tx.onerror = () => reject(tx.error)
     })
-
-    console.log(`[PartialDownload] 상태 삭제됨: ${fileId}`)
   }
 
   /**
@@ -189,16 +189,10 @@ export function usePartialDownload() {
     const now = Date.now()
     const ONE_DAY = 24 * 60 * 60 * 1000
 
-    let cleanedCount = 0
     for (const state of states) {
       if (now - state.timestamp > ONE_DAY) {
         await deleteDownloadState(state.fileId)
-        cleanedCount++
       }
-    }
-
-    if (cleanedCount > 0) {
-      console.log(`[PartialDownload] 오래된 상태 ${cleanedCount}개 정리됨`)
     }
   }
 
