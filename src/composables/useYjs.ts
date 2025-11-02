@@ -314,28 +314,51 @@ function _respondFile(
   }
 
   const awarenessChangeHandler = () => {
+    // Guard: 전송이 취소된 경우
     if (transferCancelled) return
+
     const stillConnected = checkTargetPeerConnected(provider, targetUuid)
 
-    if (targetPeerStillConnected && !stillConnected) {
-      targetPeerStillConnected = false
-      setTimeout(() => {
-        if (!transferCancelled && !checkTargetPeerConnected(provider, targetUuid)) {
-          abortTransfer('피어 연결 끊김')
-          provider.awareness.off('change', awarenessChangeHandler)
-        } else {
-          targetPeerStillConnected = true
-        }
-      }, 1000)
-    }
+    // Guard: 연결 상태가 변경되지 않은 경우
+    if (!targetPeerStillConnected || stillConnected) return
+
+    // 연결 끊김 감지 시작
+    targetPeerStillConnected = false
+
+    // 1초 후 재확인 (일시적 끊김 방지)
+    setTimeout(() => {
+      // Guard: 전송이 취소된 경우
+      if (transferCancelled) return
+
+      // 재연결 확인
+      const reconnected = checkTargetPeerConnected(provider, targetUuid)
+
+      if (reconnected) {
+        // 재연결됨
+        targetPeerStillConnected = true
+        return
+      }
+
+      // 확실히 연결 끊김 - 전송 중단
+      abortTransfer('피어 연결 끊김')
+      provider.awareness.off('change', awarenessChangeHandler)
+    }, 1000)
   }
 
   const peersChangeHandler = (event: { removed: string[]; webrtcPeers: string[] }) => {
-    if (event.removed.length > 0 && !transferCancelled && event.webrtcPeers.length === 0) {
-      abortTransfer('모든 피어 연결 끊김')
-      provider.off('peers', peersChangeHandler)
-      provider.awareness.off('change', awarenessChangeHandler)
-    }
+    // Guard: 제거된 피어가 없는 경우
+    if (event.removed.length === 0) return
+
+    // Guard: 전송이 취소된 경우
+    if (transferCancelled) return
+
+    // Guard: 아직 다른 피어가 남아있는 경우
+    if (event.webrtcPeers.length > 0) return
+
+    // 모든 피어 연결 끊김 - 전송 중단
+    abortTransfer('모든 피어 연결 끊김')
+    provider.off('peers', peersChangeHandler)
+    provider.awareness.off('change', awarenessChangeHandler)
   }
 
   provider.awareness.on('change', awarenessChangeHandler)

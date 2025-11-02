@@ -220,13 +220,14 @@ export function useFileTransfer(
     provider.awareness.on('change', async () => {
       for (const [, state] of provider.awareness.getStates()) {
         const request = state.fileRequest as FileRequest | undefined
+
+        // Guard: 요청이 없거나 내가 요청한 경우 스킵
         if (!request || request.requesterUuid === myUuid) continue
 
-        // 타겟이 지정되어 있으면 나만 처리
-        if (request.targetUuid && request.targetUuid !== myUuid) {
-          continue
-        }
+        // Guard: 타겟이 지정되어 있는데 내가 아닌 경우 스킵
+        if (request.targetUuid && request.targetUuid !== myUuid) continue
 
+        // Guard: 이미 처리한 요청인 경우 스킵
         const requestId = `${request.fileId}-${request.requesterUuid}-${request.timestamp}`
         if (processedRequests.value.has(requestId)) continue
 
@@ -294,18 +295,23 @@ export function useFileTransfer(
       }, timeout)
 
       const handler = () => {
+        // Guard: 이미 처리된 경우
         if (resolved) return
 
         for (const [, awareState] of provider.awareness.getStates()) {
           const response = awareState.fileResponse as FileResponse | undefined
+
+          // Guard: 응답이 없거나 조건에 맞지 않으면 스킵
           if (!response || response.fileId !== fileId || response.targetUuid !== myUuid || resolved) continue
 
+          // 응답 처리 시작
           resolved = true
           cleanup()
 
           const meta = files.get(fileId)
           const totalBytes = meta?.size || response.totalChunks * response.chunkSize
 
+          // 상태 초기화 또는 업데이트
           if (!state) {
             startTransfer(fileId, meta?.name || fileId, 'download', response.totalChunks, totalBytes)
             state = {
@@ -354,8 +360,10 @@ export function useFileTransfer(
       const chunks = new Array<string>(response.totalChunks)
 
       const checkAndComplete = async () => {
+        // Guard: 전송이 완료되지 않았으면 리턴
         if (!transferMap.get('complete')) return
 
+        // 모든 청크 수집
         for (let i = 0; i < response.totalChunks; i++) {
           if (!state.receivedChunks.has(i)) {
             const chunk = transferMap.get(`chunk-${i}`)
@@ -371,12 +379,14 @@ export function useFileTransfer(
           }
         }
 
-        if (isComplete(state)) {
-          clearTimeout(timeout)
-          const blob = await completeAndCache(state, fileType)
-          await deleteDownloadState(state.fileId)
-          resolve(blob)
-        }
+        // Guard: 모든 청크가 도착하지 않았으면 리턴
+        if (!isComplete(state)) return
+
+        // 완료 처리
+        clearTimeout(timeout)
+        const blob = await completeAndCache(state, fileType)
+        await deleteDownloadState(state.fileId)
+        resolve(blob)
       }
 
       transferMap.observe(() => {
@@ -457,22 +467,24 @@ export function useFileTransfer(
       const handler = async () => {
         for (const [, state] of provider.awareness.getStates()) {
           const transferOffer = state.fileTransferOffer as FileTransferOffer | undefined
-          if (transferOffer &&
-              transferOffer.fileId === fileId &&
-              transferOffer.targetUuid === myUuid &&
-              transferOffer.senderUuid === bestSender) { // 선택된 발신자인지 확인
 
-            clearTimeout(timeout)
-            cleanup()
+          // Guard: Offer가 없거나 조건에 맞지 않으면 스킵
+          if (!transferOffer) continue
+          if (transferOffer.fileId !== fileId) continue
+          if (transferOffer.targetUuid !== myUuid) continue
+          if (transferOffer.senderUuid !== bestSender) continue // 선택된 발신자인지 확인
 
-            try {
-              const blob = await receiveFileDirect(transferOffer)
-              resolve(blob)
-            } catch (error) {
-              reject(error)
-            }
-            return
+          // Offer 처리
+          clearTimeout(timeout)
+          cleanup()
+
+          try {
+            const blob = await receiveFileDirect(transferOffer)
+            resolve(blob)
+          } catch (error) {
+            reject(error)
           }
+          return
         }
       }
 

@@ -175,49 +175,50 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
             })
           }
 
-          if (
-            answer &&
-            answer.fileId === fileId &&
-            answer.targetUuid === myUuid &&
-            answer.receiverUuid === targetUuid
-          ) {
-            clearTimeout(timeout)
-            provider.awareness.off('change', checkAnswer)
+          // Guard: Answer가 없거나 조건에 맞지 않으면 스킵
+          if (!answer) return
+          if (answer.fileId !== fileId) return
+          if (answer.targetUuid !== myUuid) return
+          if (answer.receiverUuid !== targetUuid) return
 
-            // Remote description 설정
-            pc.setRemoteDescription(answer.sdp)
-              .then(() => {
-                console.log(`[WebRTC] Answer 수락`)
+          // Answer 처리
+          clearTimeout(timeout)
+          provider.awareness.off('change', checkAnswer)
 
-                // 대기 중인 ICE candidate 추가
-                const pending = pendingIceCandidates.value.get(connectionId) || []
-                pending.forEach((candidate) => {
-                  pc.addIceCandidate(candidate).catch(console.error)
-                })
-                pendingIceCandidates.value.delete(connectionId)
+          // Remote description 설정
+          pc.setRemoteDescription(answer.sdp)
+            .then(() => {
+              console.log(`[WebRTC] Answer 수락`)
 
-                // 채널이 열릴 때까지 대기
-                if (channel.readyState === 'open') {
-                  resolve(channel)
-                } else {
-                  const openHandler = () => {
-                    channel.removeEventListener('open', openHandler)
-                    console.log(`[WebRTC] DataChannel 연결 완료`)
-                    resolve(channel)
-                  }
-                  channel.addEventListener('open', openHandler)
-
-                  setTimeout(() => {
-                    if (channel.readyState !== 'open') {
-                      channel.removeEventListener('open', openHandler)
-                      reject(new Error('채널 열림 타임아웃'))
-                    }
-                  }, 15000)
-                }
+              // 대기 중인 ICE candidate 추가
+              const pending = pendingIceCandidates.value.get(connectionId) || []
+              pending.forEach((candidate) => {
+                pc.addIceCandidate(candidate).catch(console.error)
               })
-              .catch(reject)
-            return
-          }
+              pendingIceCandidates.value.delete(connectionId)
+
+              // 채널이 열릴 때까지 대기
+              if (channel.readyState === 'open') {
+                resolve(channel)
+                return
+              }
+
+              const openHandler = () => {
+                channel.removeEventListener('open', openHandler)
+                console.log(`[WebRTC] DataChannel 연결 완료`)
+                resolve(channel)
+              }
+              channel.addEventListener('open', openHandler)
+
+              setTimeout(() => {
+                if (channel.readyState !== 'open') {
+                  channel.removeEventListener('open', openHandler)
+                  reject(new Error('채널 열림 타임아웃'))
+                }
+              }, 15000)
+            })
+            .catch(reject)
+          return
         }
       }
 

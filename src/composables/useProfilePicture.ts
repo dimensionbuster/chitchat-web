@@ -327,62 +327,60 @@ export function useProfilePicture(
 
         // 프로필 전송 데이터 확인
         for (const key in stateObj) {
-          if (key.startsWith('profileTransfer-')) {
-            const transferData = stateObj[key]
+          // Guard: 프로필 전송 키가 아니면 스킵
+          if (!key.startsWith('profileTransfer-')) continue
 
-            if (!transferData || typeof transferData !== 'object') {
+          const transferData = stateObj[key]
+
+          // Guard: 데이터가 없거나 객체가 아니면 스킵
+          if (!transferData || typeof transferData !== 'object') continue
+
+          const transfer = transferData as {
+            userId: string
+            targetUserId: string
+            imageData: string
+            timestamp: number
+            size: number
+            originalFileId?: string
+          }
+
+          // Guard: 이미 처리한 전송인지 확인 (무한 루프 방지)
+          const transferId = `${transfer.userId}-${transfer.timestamp}`
+          if (processedTransfers.has(transferId)) continue
+
+          console.log(`[ProfilePicture] 프로필 전송 감지: ${key}, from: ${transfer.userId?.slice(-8)}, to: ${transfer.targetUserId?.slice(-8)}, 내 ID: ${myUserId.slice(-8)}`)
+
+          // Guard: 내가 수신자가 아니거나 내가 발신자인 경우 스킵
+          if (transfer.targetUserId !== myUserId) continue
+          if (transfer.userId === myUserId) continue
+
+          // 전송 처리 마커 추가
+          processedTransfers.add(transferId)
+
+          // Guard: 이미 최신 프로필을 보유한 경우 스킵
+          if (profilePictures.has(transfer.userId)) {
+            const cached = await getProfilePicture(transfer.userId)
+            if (cached && cached.timestamp >= transfer.timestamp) {
+              console.log(`[ProfilePicture] 이미 최신 프로필 보유: ${transfer.userId.slice(-8)}`)
               continue
-            }
-
-            const transfer = transferData as {
-              userId: string
-              targetUserId: string
-              imageData: string
-              timestamp: number
-              size: number
-              originalFileId?: string
-            }
-
-            // 이미 처리한 전송인지 확인 (무한 루프 방지)
-            const transferId = `${transfer.userId}-${transfer.timestamp}`
-            if (processedTransfers.has(transferId)) {
-              continue
-            }
-
-            console.log(`[ProfilePicture] 프로필 전송 감지: ${key}, from: ${transfer.userId?.slice(-8)}, to: ${transfer.targetUserId?.slice(-8)}, 내 ID: ${myUserId.slice(-8)}`)
-
-            if (transfer.targetUserId === myUserId &&
-                transfer.userId !== myUserId) {
-
-              // 전송 처리 마커 추가
-              processedTransfers.add(transferId)
-
-              // 이미 처리한 경우 스킵
-              if (profilePictures.has(transfer.userId)) {
-                const cached = await getProfilePicture(transfer.userId)
-                if (cached && cached.timestamp >= transfer.timestamp) {
-                  console.log(`[ProfilePicture] 이미 최신 프로필 보유: ${transfer.userId.slice(-8)}`)
-                  continue
-                }
-              }
-
-              console.log(`[ProfilePicture] 프로필 사진 수신: ${transfer.userId.slice(-8)}, 크기: ${transfer.size} bytes, 원본ID: ${transfer.originalFileId || '없음'}`)
-
-              // 프로필 저장
-              const profile: ProfilePicture = {
-                userId: transfer.userId,
-                imageData: transfer.imageData,
-                timestamp: transfer.timestamp,
-                size: transfer.size,
-                originalFileId: transfer.originalFileId
-              }
-
-              await saveProfilePicture(profile)
-              profilePictures.set(transfer.userId, transfer.imageData)
-
-              console.log(`[ProfilePicture] 프로필 사진 저장 완료: ${transfer.userId.slice(-8)}, 캐시 크기: ${profilePictures.size}`)
             }
           }
+
+          console.log(`[ProfilePicture] 프로필 사진 수신: ${transfer.userId.slice(-8)}, 크기: ${transfer.size} bytes, 원본ID: ${transfer.originalFileId || '없음'}`)
+
+          // 프로필 저장
+          const profile: ProfilePicture = {
+            userId: transfer.userId,
+            imageData: transfer.imageData,
+            timestamp: transfer.timestamp,
+            size: transfer.size,
+            originalFileId: transfer.originalFileId
+          }
+
+          await saveProfilePicture(profile)
+          profilePictures.set(transfer.userId, transfer.imageData)
+
+          console.log(`[ProfilePicture] 프로필 사진 저장 완료: ${transfer.userId.slice(-8)}, 캐시 크기: ${profilePictures.size}`)
         }
       }
     })
@@ -426,33 +424,36 @@ export function useProfilePicture(
       const profileAwareness = stateObj.profilePicture as ProfilePictureAwareness | undefined
       const userUuid = stateObj.userUuid as string | undefined
 
-      if (profileAwareness &&
-          profileAwareness.hasProfilePicture &&
-          profileAwareness.userId === peerId &&
-          userUuid === peerId) {
+      // Guard: 프로필 awareness가 없거나 조건에 맞지 않으면 스킵
+      if (!profileAwareness) continue
+      if (!profileAwareness.hasProfilePicture) continue
+      if (profileAwareness.userId !== peerId) continue
+      if (userUuid !== peerId) continue
 
-        // 로컬에 없거나 오래된 경우 요청
-        const cached = await getProfilePicture(peerId)
-        if (!cached || cached.timestamp < profileAwareness.timestamp) {
-          if (!requestingProfiles.has(peerId)) {
-            requestingProfiles.add(peerId)
-            console.log(`[ProfilePicture] 프로필 사진 요청: ${peerId.slice(-8)}`)
+      // 로컬에 없거나 오래된 경우 요청
+      const cached = await getProfilePicture(peerId)
+      const needsUpdate = !cached || cached.timestamp < profileAwareness.timestamp
 
-            // awareness로 요청
-            provider.awareness.setLocalStateField(`profileRequest-${Date.now()}`, {
-              requesterUserId: myUserId,
-              targetUserId: peerId,
-              timestamp: Date.now()
-            })
+      if (needsUpdate) {
+        // Guard: 이미 요청 중인 경우 스킵
+        if (requestingProfiles.has(peerId)) continue
 
-            // 5초 후 요청 목록에서 제거
-            setTimeout(() => requestingProfiles.delete(peerId), 5000)
-          }
-        } else {
-          // 캐시된 프로필 사용
-          console.log(`[ProfilePicture] 캐시된 프로필 사용: ${peerId.slice(-8)}`)
-          profilePictures.set(peerId, cached.imageData)
-        }
+        requestingProfiles.add(peerId)
+        console.log(`[ProfilePicture] 프로필 사진 요청: ${peerId.slice(-8)}`)
+
+        // awareness로 요청
+        provider.awareness.setLocalStateField(`profileRequest-${Date.now()}`, {
+          requesterUserId: myUserId,
+          targetUserId: peerId,
+          timestamp: Date.now()
+        })
+
+        // 5초 후 요청 목록에서 제거
+        setTimeout(() => requestingProfiles.delete(peerId), 5000)
+      } else {
+        // 캐시된 프로필 사용
+        console.log(`[ProfilePicture] 캐시된 프로필 사용: ${peerId.slice(-8)}`)
+        profilePictures.set(peerId, cached.imageData)
       }
     }
   }
@@ -470,35 +471,34 @@ export function useProfilePicture(
         const stateObj = state as Record<string, unknown>
 
         for (const key in stateObj) {
-          if (key.startsWith('profileRequest-')) {
-            const requestData = stateObj[key]
+          // Guard: 프로필 요청 키가 아니면 스킵
+          if (!key.startsWith('profileRequest-')) continue
 
-            if (!requestData || typeof requestData !== 'object') continue
+          const requestData = stateObj[key]
 
-            const request = requestData as {
-              requesterUserId: string
-              targetUserId: string
-              timestamp: number
-            }
+          // Guard: 데이터가 없거나 객체가 아니면 스킵
+          if (!requestData || typeof requestData !== 'object') continue
 
-            // 이미 처리한 요청인지 확인
-            const requestId = `${request.requesterUserId}-${request.timestamp}`
-            if (processedRequests.has(requestId)) {
-              continue
-            }
-
-            if (request.targetUserId === myUserId &&
-                request.requesterUserId !== myUserId) {
-
-              // 요청 처리 마커 추가
-              processedRequests.add(requestId)
-
-              console.log(`[ProfilePicture] 프로필 요청 받음: ${request.requesterUserId.slice(-8)}`)
-
-              // 프로필 전송
-              await sendProfilePicture(request.requesterUserId)
-            }
+          const request = requestData as {
+            requesterUserId: string
+            targetUserId: string
+            timestamp: number
           }
+
+          // Guard: 이미 처리한 요청인지 확인
+          const requestId = `${request.requesterUserId}-${request.timestamp}`
+          if (processedRequests.has(requestId)) continue
+
+          // Guard: 내가 대상이 아니거나 내가 요청자인 경우 스킵
+          if (request.targetUserId !== myUserId) continue
+          if (request.requesterUserId === myUserId) continue
+
+          // 요청 처리
+          processedRequests.add(requestId)
+          console.log(`[ProfilePicture] 프로필 요청 받음: ${request.requesterUserId.slice(-8)}`)
+
+          // 프로필 전송
+          await sendProfilePicture(request.requesterUserId)
         }
       }
     })

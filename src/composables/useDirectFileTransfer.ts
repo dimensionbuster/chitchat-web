@@ -319,67 +319,78 @@ export function useDirectFileTransfer(
             // 메타데이터 메시지
             const msg: TransferMessage = JSON.parse(event.data)
 
-            if (msg.type === 'chunk') {
-              currentIndex = msg.index
-            } else if (msg.type === 'complete') {
-              clearTimeout(timeout)
+            switch (msg.type) {
+              case 'chunk':
+                currentIndex = msg.index
+                break
 
-              // 모든 청크가 도착했는지 확인
-              if (!isDownloadComplete(partialState!)) {
+              case 'complete': {
+                clearTimeout(timeout)
+
+                // 모든 청크가 도착했는지 확인
+                if (!isDownloadComplete(partialState!)) {
+                  await saveDownloadState(partialState!)
+                  reject(new Error(`청크 누락: ${partialState!.receivedChunks.size}/${offer.totalChunks}`))
+                  return
+                }
+
+                // Blob 생성
+                const validChunks = chunks.filter((c): c is ArrayBuffer => c !== null)
+                const blob = new Blob(validChunks, { type: meta?.type || 'application/octet-stream' })
+                console.log(`[#19] P2P 수신 완료: ${(blob.size / 1024).toFixed(0)}KB`)
+
+                // 캐시 저장 및 상태 삭제
+                try {
+                  await cacheFile(offer.fileId, blob)
+                  await deleteDownloadState(offer.fileId)
+                  completeTransfer(transferKey)
+                  channel.close()
+                  setTimeout(() => cleanup(connectionId), 1000)
+                  resolve(blob)
+                } catch (error) {
+                  reject(error)
+                }
+                break
+              }
+
+              case 'error':
+                clearTimeout(timeout)
                 await saveDownloadState(partialState!)
-                reject(new Error(`청크 누락: ${partialState!.receivedChunks.size}/${offer.totalChunks}`))
-                return
-              }
-
-              // Blob 생성
-              const validChunks = chunks.filter((c): c is ArrayBuffer => c !== null)
-              const blob = new Blob(validChunks, { type: meta?.type || 'application/octet-stream' })
-              console.log(`[#19] P2P 수신 완료: ${(blob.size / 1024).toFixed(0)}KB`)
-
-              // 캐시 저장 및 상태 삭제
-              try {
-                await cacheFile(offer.fileId, blob)
-                await deleteDownloadState(offer.fileId)
-                completeTransfer(transferKey)
                 channel.close()
-                setTimeout(() => cleanup(connectionId), 1000)
-                resolve(blob)
-              } catch (error) {
-                reject(error)
-              }
-            } else if (msg.type === 'error') {
-              clearTimeout(timeout)
-              await saveDownloadState(partialState!)
-              channel.close()
-              cleanup(connectionId)
-              reject(new Error(msg.message))
+                cleanup(connectionId)
+                reject(new Error(msg.message))
+                break
             }
           } else {
             // ArrayBuffer (청크 데이터)
-            if (currentIndex >= 0 && currentIndex < offer.totalChunks) {
-              // 이미 받은 청크는 건너뛰기
-              if (partialState!.receivedChunks.has(currentIndex)) {
-                return
-              }
-
-              chunks[currentIndex] = event.data
-
-              // 청크를 base64로 저장 (이어받기용)
-              const base64Chunk = arrayBufferToBase64(event.data as ArrayBuffer)
-              addChunk(partialState!, currentIndex, base64Chunk)
-
-              updateProgress(transferKey, partialState!.receivedChunks.size)
-
-              // 주기적으로 상태 저장
-              if (partialState!.receivedChunks.size % 10 === 0) {
-                await saveDownloadState(partialState!)
-              }
-
-              if (partialState!.receivedChunks.size % 20 === 0 || isDownloadComplete(partialState!)) {
-                console.log(`[#20] P2P 수신: ${partialState!.receivedChunks.size}/${offer.totalChunks} (${((partialState!.receivedChunks.size / offer.totalChunks) * 100).toFixed(0)}%)`)
-              }
-            } else {
+            // Guard: 청크 인덱스 유효성 검증
+            if (currentIndex < 0 || currentIndex >= offer.totalChunks) {
               console.warn(`[DirectTransfer] 잘못된 청크 인덱스: ${currentIndex}`)
+              return
+            }
+
+            // Guard: 이미 받은 청크는 건너뛰기
+            if (partialState!.receivedChunks.has(currentIndex)) {
+              return
+            }
+
+            // 청크 저장
+            chunks[currentIndex] = event.data
+
+            // 청크를 base64로 저장 (이어받기용)
+            const base64Chunk = arrayBufferToBase64(event.data as ArrayBuffer)
+            addChunk(partialState!, currentIndex, base64Chunk)
+
+            updateProgress(transferKey, partialState!.receivedChunks.size)
+
+            // 주기적으로 상태 저장
+            if (partialState!.receivedChunks.size % 10 === 0) {
+              await saveDownloadState(partialState!)
+            }
+
+            // 진행 상황 로그
+            if (partialState!.receivedChunks.size % 20 === 0 || isDownloadComplete(partialState!)) {
+              console.log(`[#20] P2P 수신: ${partialState!.receivedChunks.size}/${offer.totalChunks} (${((partialState!.receivedChunks.size / offer.totalChunks) * 100).toFixed(0)}%)`)
             }
           }
         }

@@ -1239,6 +1239,417 @@ async function importSettings() {
 
 ---
 
+## 15. useProfilePicture
+
+### 개요
+**프로필 사진 처리 및 전송 관리**를 담당합니다. 이미지 리사이징, 압축, 글로벌 큐를 통한 업로드/다운로드, awareness를 통한 프로필 동기화를 모두 처리합니다.
+
+### 초기화
+
+```typescript
+const {
+  myProfilePicture,
+  profilePictures,
+  getUserProfilePicture,
+  setMyProfilePicture,
+  deleteMyProfilePicture,
+  sendProfilePicture,
+  handlePeerConnected,
+  initializeProfilePictures,
+  getProfileOriginalFileId
+} = useProfilePicture(
+  provider,                    // WebrtcProvider
+  myUuid,                      // 내 사용자 ID
+  files,                       // Y.Map<FileMeta> (선택)
+  registerFileAvailability     // 파일 소유권 브로드캐스트 함수 (선택)
+)
+```
+
+### 상태
+
+#### `myProfilePicture`
+- **타입**: `ref<string | null>`
+- **설명**: 내 프로필 사진 (data URL)
+- **예시**: `data:image/jpeg;base64,/9j/4AAQSkZJRg...`
+
+#### `profilePictures`
+- **타입**: `reactive<Map<userId, base64Data>>`
+- **설명**: 모든 사용자의 프로필 사진 캐시
+
+#### `getUserProfilePicture`
+- **타입**: `computed<(userId: string) => string | null>`
+- **용도**: 특정 사용자의 프로필 사진 가져오기
+- **예시**:
+```typescript
+const avatarUrl = getUserProfilePicture('user-123')
+if (avatarUrl) {
+  imgElement.src = avatarUrl
+}
+```
+
+### 함수
+
+#### `initializeProfilePictures(): Promise<void>`
+- **용도**: 프로필 사진 시스템 초기화 (필수!)
+- **시점**: 채팅방 입장 직후 무조건 호출
+- **역할**:
+  - 내 프로필 사진 IndexedDB에서 로드
+  - awareness에 프로필 존재 알림
+  - 수신 리스너 설정
+- **예시**:
+```typescript
+await initializeProfilePictures() // 필수!
+```
+
+#### `setMyProfilePicture(file: File): Promise<void>`
+- **용도**: 내 프로필 사진 설정
+- **시점**: 사용자가 프로필 사진 업로드 버튼을 누를 때
+- **자동 처리**:
+  1. 원본 파일을 파일 전송 시스템에 저장 (고해상도 원본)
+  2. 이미지 리사이징 (최대 256px x 256px)
+  3. JPEG 압축 (품질 자동 조정, 최대 100KB)
+  4. IndexedDB에 저장
+  5. awareness에 프로필 존재 알림
+  6. 연결된 모든 피어에게 자동 전송
+- **예시**:
+```typescript
+async function uploadProfilePicture(file: File) {
+  try {
+    await setMyProfilePicture(file)
+    alert('프로필 사진 설정 완료!')
+  } catch (error) {
+    alert('프로필 사진 설정 실패: ' + error.message)
+  }
+}
+```
+
+#### `deleteMyProfilePicture(): Promise<void>`
+- **용도**: 내 프로필 사진 삭제
+- **시점**: 사용자가 프로필 사진 삭제 버튼을 누를 때
+- **예시**:
+```typescript
+await deleteMyProfilePicture()
+```
+
+#### `sendProfilePicture(targetPeerId: string): Promise<void>`
+- **용도**: 특정 피어에게 프로필 사진 전송
+- **시점**: 
+  - 피어 연결 시 자동 호출됨
+  - 수동으로 재전송 필요 시
+- **자동 처리**: 글로벌 큐를 통해 최우선 순위로 전송
+- **예시**:
+```typescript
+await sendProfilePicture('peer-456')
+```
+
+#### `handlePeerConnected(peerId: string): Promise<void>`
+- **용도**: 피어 연결 시 프로필 사진 교환
+- **시점**: WebRTC 연결이 성립했을 때
+- **역할**:
+  - 내 프로필 사진이 있으면 자동 전송
+  - 상대방 프로필 사진이 있으면 자동 요청
+  - 중복 전송/요청 방지
+- **예시**:
+```typescript
+// useWebrtcConnection에서 자동 호출됨
+provider.awareness.on('change', () => {
+  for (const [, state] of provider.awareness.getStates()) {
+    const peerId = state.userUuid
+    if (peerId && peerId !== myUuid) {
+      handlePeerConnected(peerId)
+    }
+  }
+})
+```
+
+#### `getProfileOriginalFileId(userId: string): Promise<string | null>`
+- **용도**: 프로필 원본 파일 ID 가져오기
+- **시점**: 고해상도 원본 이미지를 다운로드하려고 할 때
+- **반환값**: 원본 파일 ID 또는 `null`
+- **예시**:
+```typescript
+const originalFileId = await getProfileOriginalFileId('user-123')
+if (originalFileId) {
+  // 파일 전송 시스템을 통해 원본 다운로드
+  await downloadFile(originalFileId)
+}
+```
+
+### 이미지 처리 상세
+
+#### 리사이징 및 압축
+1. **최대 크기**: 256px x 256px (긴 쪽 기준, 비율 유지)
+2. **포맷**: JPEG
+3. **초기 품질**: 0.85
+4. **최대 크기**: 100KB
+5. **자동 조정**: 크기가 100KB를 초과하면 품질을 자동으로 낮춤 (최소 0.1)
+
+#### 저장 형태
+- **썸네일**: Base64로 IndexedDB에 저장 (빠른 로드)
+- **원본**: 파일 전송 시스템에 Blob으로 저장 (고해상도)
+
+### 사용 예시
+
+```vue
+<template>
+  <div class="profile-section">
+    <!-- 내 프로필 사진 -->
+    <div class="my-profile">
+      <img v-if="myProfilePicture" 
+           :src="myProfilePicture" 
+           alt="내 프로필" />
+      <div v-else class="no-profile">프로필 없음</div>
+      
+      <input type="file" 
+             ref="fileInput"
+             accept="image/*"
+             @change="handleFileSelect"
+             style="display: none" />
+      
+      <button @click="$refs.fileInput.click()">
+        {{ myProfilePicture ? '변경' : '설정' }}
+      </button>
+      
+      <button v-if="myProfilePicture" 
+              @click="deleteMyProfilePicture">
+        삭제
+      </button>
+    </div>
+    
+    <!-- 다른 사용자 프로필 -->
+    <div v-for="msg in messages" :key="msg.id" class="message">
+      <img v-if="getUserProfilePicture(msg.authorTrueUuid)"
+           :src="getUserProfilePicture(msg.authorTrueUuid)"
+           alt="프로필"
+           class="avatar" />
+      <div v-else class="default-avatar">
+        {{ msg.authorName[0] }}
+      </div>
+      <div class="message-content">
+        <strong>{{ msg.authorName }}</strong>
+        <p>{{ msg.text }}</p>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { onMounted } from 'vue'
+import { useProfilePicture } from '@/composables/useProfilePicture'
+
+const {
+  myProfilePicture,
+  getUserProfilePicture,
+  setMyProfilePicture,
+  deleteMyProfilePicture,
+  initializeProfilePictures,
+  handlePeerConnected
+} = useProfilePicture(
+  provider,
+  myUuid,
+  files,
+  registerFileAvailability
+)
+
+// 초기화 (필수!)
+onMounted(async () => {
+  await initializeProfilePictures()
+})
+
+// 프로필 사진 업로드
+async function handleFileSelect(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  
+  if (!file.type.startsWith('image/')) {
+    alert('이미지 파일만 선택할 수 있습니다')
+    return
+  }
+  
+  try {
+    await setMyProfilePicture(file)
+    alert('프로필 사진 설정 완료!')
+  } catch (error) {
+    alert('프로필 사진 설정 실패: ' + error.message)
+  }
+}
+
+// 피어 연결 시 프로필 교환
+watch(() => Array.from(provider.awareness.getStates().keys()), (clientIds) => {
+  for (const clientId of clientIds) {
+    const state = provider.awareness.getStates().get(clientId)
+    const peerId = state?.userUuid
+    if (peerId && peerId !== myUuid) {
+      handlePeerConnected(peerId)
+    }
+  }
+})
+</script>
+
+<style scoped>
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.default-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+</style>
+```
+
+---
+
+## 16. useStorageProfilePicture
+
+### 개요
+**IndexedDB를 사용한 프로필 사진 로컬 저장**을 관리합니다. Base64 형태로 저장하여 빠른 로드를 지원합니다.
+
+### 함수
+
+#### `saveProfilePicture(profile: ProfilePicture): Promise<void>`
+- **용도**: 프로필 사진을 IndexedDB에 저장
+- **시점**: 프로필 사진 설정 또는 수신 시
+- **파라미터**:
+```typescript
+interface ProfilePicture {
+  userId: string          // 사용자 ID (키)
+  imageData: string       // Base64 인코딩된 이미지
+  timestamp: number       // 저장 시각
+  size: number           // 바이트 크기
+  originalFileId?: string // 원본 파일 ID (선택)
+}
+```
+- **예시**:
+```typescript
+const profile = {
+  userId: 'user-123',
+  imageData: 'base64data...',
+  timestamp: Date.now(),
+  size: 50000,
+  originalFileId: 'file-456'
+}
+await saveProfilePicture(profile)
+```
+
+#### `getProfilePicture(userId: string): Promise<ProfilePicture | null>`
+- **용도**: 프로필 사진 조회
+- **시점**: 프로필 사진을 표시하려고 할 때
+- **반환값**: 저장된 프로필 또는 `null`
+- **예시**:
+```typescript
+const profile = await getProfilePicture('user-123')
+if (profile) {
+  imgElement.src = `data:image/jpeg;base64,${profile.imageData}`
+}
+```
+
+#### `hasProfilePicture(userId: string): Promise<boolean>`
+- **용도**: 프로필 사진 존재 여부 확인
+- **시점**: 프로필 사진 요청 전 확인
+- **예시**:
+```typescript
+if (await hasProfilePicture('user-123')) {
+  console.log('프로필 사진 있음')
+}
+```
+
+#### `deleteProfilePicture(userId: string): Promise<void>`
+- **용도**: 프로필 사진 삭제
+- **시점**: 사용자가 프로필 사진을 삭제할 때
+- **예시**:
+```typescript
+await deleteProfilePicture(myUuid)
+```
+
+#### `getAllProfilePictures(): Promise<ProfilePicture[]>`
+- **용도**: 모든 프로필 사진 조회
+- **시점**: 프로필 목록 표시 또는 백업 시
+- **예시**:
+```typescript
+const allProfiles = await getAllProfilePictures()
+console.log(`총 ${allProfiles.length}개의 프로필 사진`)
+```
+
+### 데이터베이스 구조
+
+- **DB Name**: `chitchat-profile-pictures`
+- **Store Name**: `profiles`
+- **Key Path**: `userId`
+- **Version**: 1
+
+### 사용 예시
+
+```typescript
+import {
+  saveProfilePicture,
+  getProfilePicture,
+  hasProfilePicture,
+  deleteProfilePicture,
+  getAllProfilePictures
+} from '@/composables/useStorageProfilePicture'
+
+// 프로필 저장
+async function saveProfile(userId: string, imageData: string) {
+  const profile = {
+    userId,
+    imageData,
+    timestamp: Date.now(),
+    size: Math.ceil((imageData.length * 3) / 4) // Base64 크기 계산
+  }
+  await saveProfilePicture(profile)
+  console.log('프로필 저장 완료')
+}
+
+// 프로필 로드
+async function loadProfile(userId: string) {
+  const profile = await getProfilePicture(userId)
+  if (profile) {
+    return `data:image/jpeg;base64,${profile.imageData}`
+  }
+  return null
+}
+
+// 프로필 존재 확인
+async function checkProfile(userId: string) {
+  const exists = await hasProfilePicture(userId)
+  console.log(`프로필 ${exists ? '있음' : '없음'}`)
+}
+
+// 프로필 삭제
+async function removeProfile(userId: string) {
+  await deleteProfilePicture(userId)
+  console.log('프로필 삭제 완료')
+}
+
+// 모든 프로필 조회
+async function listAllProfiles() {
+  const profiles = await getAllProfilePictures()
+  console.log('저장된 프로필:')
+  for (const profile of profiles) {
+    console.log(`- ${profile.userId}: ${profile.size} bytes (${new Date(profile.timestamp).toLocaleString()})`)
+  }
+}
+```
+
+### 참고사항
+
+- **자동 처리**: `useProfilePicture`가 자동으로 호출하므로 직접 사용할 일은 적습니다
+- **캐시 역할**: 네트워크 없이도 프로필 사진을 빠르게 로드할 수 있습니다
+- **용량 관리**: 프로필 사진은 압축되어 평균 20-50KB 정도입니다
+
+---
+
 ## 전체 사용 흐름 예시
 
 ### 채팅방 입장 시
@@ -1405,6 +1816,8 @@ console.log('중단된 다운로드:', states)
 - **useImageAutoLoader**: 이미지 자동 로드 (권장)
 - **useNotification**: 알림 (선택)
 - **useStorageChatroomSettings**: 설정 저장 (선택)
+- **useProfilePicture**: 프로필 사진 관리 (권장)
+- **useStorageProfilePicture**: 프로필 사진 로컬 저장 (자동 처리됨)
 
 ### 기본 사용 패턴
 
@@ -1417,13 +1830,18 @@ fileTransfer.setupFileRequestListener() // 필수!
 const fileActions = useFileActions(...)
 const imageLoader = useImageAutoLoader(...)
 
+// 프로필 사진 (선택)
+const profilePicture = useProfilePicture(provider, myUuid, files, registerFileAvailability)
+await profilePicture.initializeProfilePictures() // 필수!
+
 // === 전송 ===
 yjs.sendTextMessage(myUuid, myName, text)
 await uploadFile(file)
+await profilePicture.setMyProfilePicture(profileFile)
 
 // === 수신 ===
 await fileActions.downloadFile(fileId)
 await imageLoader.processAutoDownload(messages)
 ```
 
-이 문서를 참고하여 ChitChat의 모든 파일 전송 기능을 이해하고 사용하실 수 있습니다! 🎉
+이 문서를 참고하여 ChitChat의 모든 파일 전송 및 프로필 기능을 이해하고 사용하실 수 있습니다! 🎉

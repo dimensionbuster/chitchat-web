@@ -255,21 +255,24 @@ class GlobalDataChannelQueueManager {
 
     if (activeJobsForPeer.length > 0) {
       activeJobsForPeer.forEach(({ jobId, job }) => {
-        // file-transfer, image-transfer, direct-p2p는 일회성 연결이므로
-        // 채널이 닫히는 것이 정상 → 실패로 처리하지 않음
-        const isOneTimeTransfer = job.type === 'file-transfer' ||
-                                   job.type === 'image-transfer' ||
-                                   job.type === 'direct-p2p'
+        // 작업 타입에 따라 다르게 처리
+        switch (job.type) {
+          case 'file-transfer':
+          case 'image-transfer':
+          case 'direct-p2p':
+            // 일회성 전송은 execute() 함수가 알아서 완료/실패 처리함
+            console.log(`[Queue] 일회성 전송 작업 ${jobId} - 채널 닫힘 무시 (execute가 처리 중)`)
+            // activeJobs에서 제거하지 않음 - execute()가 완료되면 자동으로 제거됨
+            break
 
-        if (isOneTimeTransfer) {
-          // 일회성 전송은 execute() 함수가 알아서 완료/실패 처리함
-          console.log(`[Queue] 일회성 전송 작업 ${jobId} - 채널 닫힘 무시 (execute가 처리 중)`)
-          // activeJobs에서 제거하지 않음 - execute()가 완료되면 자동으로 제거됨
-        } else {
-          // chunk-transfer, profile-picture 등 영구 연결은 채널이 끊기면 실패
-          console.log(`[Queue] 영구 연결 작업 ${jobId} 실패 처리`)
-          this.activeJobs.delete(jobId)
-          this.stats.failedJobs++
+          case 'chunk-transfer':
+          case 'profile-picture':
+          default:
+            // 영구 연결은 채널이 끊기면 실패
+            console.log(`[Queue] 영구 연결 작업 ${jobId} 실패 처리`)
+            this.activeJobs.delete(jobId)
+            this.stats.failedJobs++
+            break
         }
       })
     }
