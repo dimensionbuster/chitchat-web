@@ -24,6 +24,7 @@ export type FileTransferOffer = {
   fileSize: number
   sdp: RTCSessionDescriptionInit
   timestamp: number
+  receivedChunks?: number[] // 이어받기: 수신자가 이미 받은 청크 인덱스
 }
 
 export type FileTransferAnswer = {
@@ -32,6 +33,7 @@ export type FileTransferAnswer = {
   targetUuid: string
   sdp: RTCSessionDescriptionInit
   timestamp: number
+  receivedChunks?: number[] // 이어받기: 수신자가 이미 받은 청크 인덱스
 }
 
 export type FileTransferIce = {
@@ -108,6 +110,7 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
     targetUuid: string,
     totalChunks: number,
     fileSize: number,
+    receivedChunks?: number[], // 이어받기: 수신자가 이미 받은 청크 (Answer에서 전달)
   ): Promise<RTCDataChannel> {
     const connectionId = getConnectionId(fileId, targetUuid)
 
@@ -146,6 +149,7 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
       fileSize,
       sdp: offer,
       timestamp: Date.now(),
+      receivedChunks, // 이어받기 정보 포함
     }
 
     // 🔥 고유 키 사용 (여러 파일 동시 전송 지원)
