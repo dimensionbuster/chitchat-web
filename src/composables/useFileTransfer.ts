@@ -466,25 +466,34 @@ export function useFileTransfer(
 
       const handler = async () => {
         for (const [, state] of provider.awareness.getStates()) {
-          const transferOffer = state.fileTransferOffer as FileTransferOffer | undefined
+          const stateObj = state as Record<string, unknown>
 
-          // Guard: Offer가 없거나 조건에 맞지 않으면 스킵
-          if (!transferOffer) continue
-          if (transferOffer.fileId !== fileId) continue
-          if (transferOffer.targetUuid !== myUuid) continue
-          if (transferOffer.senderUuid !== bestSender) continue // 선택된 발신자인지 확인
+          // 🔥 모든 'fileTransferOffer-'로 시작하는 키 탐색
+          for (const key in stateObj) {
+            if (!key.startsWith('fileTransferOffer-')) continue
 
-          // Offer 처리
-          clearTimeout(timeout)
-          cleanup()
+            const transferOffer = stateObj[key] as FileTransferOffer | undefined
 
-          try {
-            const blob = await receiveFileDirect(transferOffer)
-            resolve(blob)
-          } catch (error) {
-            reject(error)
+            // Guard: Offer가 없거나 조건에 맞지 않으면 스킵
+            if (!transferOffer) continue
+            if (transferOffer.fileId !== fileId) continue
+            if (transferOffer.targetUuid !== myUuid) continue
+            if (transferOffer.senderUuid !== bestSender) continue // 선택된 발신자인지 확인
+
+            console.log(`[FileTransfer] Offer 감지: ${key}`)
+
+            // Offer 처리
+            clearTimeout(timeout)
+            cleanup()
+
+            try {
+              const blob = await receiveFileDirect(transferOffer)
+              resolve(blob)
+            } catch (error) {
+              reject(error)
+            }
+            return
           }
-          return
         }
       }
 

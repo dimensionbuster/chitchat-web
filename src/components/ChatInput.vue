@@ -1,10 +1,13 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatInput' })
 import { ref } from 'vue'
+import ProfileAvatar from './ProfileAvatar.vue';
 
 defineProps<{
   disabled: boolean
   isUploading: boolean
+  myProfilePicture: string | null
+  userName: string
 }>()
 
 const emit = defineEmits<{
@@ -32,14 +35,29 @@ const onFileChange = (e: Event) => {
 
 <template>
   <div class="chat-input">
-    <button
+    <!-- 프로필 설정 버튼 -->
+     <!-- 프로필 사진 미리보기로 원형모양 -->
+    <!-- <button
       @click="emit('openProfileSettings')"
       :disabled="disabled"
       class="profile-button"
       title="프로필 설정"
     >
       👤
-    </button>
+    </button> -->
+      <button
+        @click="emit('openProfileSettings')"
+        :disabled="disabled"
+        class="profile-button"
+        title="프로필 설정"
+      >
+       <ProfileAvatar
+        :imageUrl="myProfilePicture || null"
+        :size="48"
+        :clickable="false"
+        :userName="userName"
+        />
+      </button>
     <input
       v-model="input"
       placeholder="메시지…"
@@ -90,12 +108,15 @@ const onFileChange = (e: Event) => {
 }
 
 .profile-button {
-  padding: 6px 12px;
+  aspect-ratio: 1 / 1;
+  margin: 0;
+  padding: 0;
   cursor: pointer;
-  background: #6c757d;
-  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
-  border-radius: 4px;
+  border-radius: 50%;
   font-size: 18px;
   transition: opacity 0.2s;
 }
@@ -115,7 +136,8 @@ const onFileChange = (e: Event) => {
   color: white;
   border-radius: 4px;
   cursor: pointer;
-  display: inline-block;
+  display: flex;
+  align-items: center;
   transition: opacity 0.2s;
 }
 

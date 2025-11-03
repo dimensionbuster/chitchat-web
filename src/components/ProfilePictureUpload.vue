@@ -1,6 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'ProfilePictureUpload' })
 import { ref } from 'vue'
+import { showAlert, showConfirm } from '../composables/useCustomDialog'
 
 const props = defineProps<{
   currentImage: string | null
@@ -26,7 +27,7 @@ const handleFileChange = async (e: Event) => {
 
   // 이미지 파일만 허용
   if (!file.type.startsWith('image/')) {
-    alert('이미지 파일만 업로드할 수 있습니다.')
+    await showAlert('이미지 파일만 업로드할 수 있습니다.')
     return
   }
 
@@ -40,9 +41,10 @@ const handleFileChange = async (e: Event) => {
   }
 }
 
-const handleDelete = () => {
+const handleDelete = async () => {
   if (props.disabled || isProcessing.value) return
-  if (confirm('프로필 사진을 삭제하시겠습니까?')) {
+  const confirmed = await showConfirm('프로필 사진을 삭제하시겠습니까?')
+  if (confirmed) {
     emit('delete')
   }
 }

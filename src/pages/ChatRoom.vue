@@ -10,6 +10,7 @@ import { useNotification } from '../composables/useNotification'
 import { useGlobalDataChannelQueue } from '../composables/useGlobalDataChannelQueue'
 import { useProfilePicture } from '../composables/useProfilePicture'
 import { getCachedFile } from '../composables/useStorageFileCache'
+import { showAlert, showConfirm } from '../composables/useCustomDialog'
 import router from '@/router'
 import ChatHeader from '@/components/ChatHeader.vue'
 import MessageList from '@/components/MessageList.vue'
@@ -60,14 +61,15 @@ const { showNotification } = useNotification()
 // 프로필 사진 기능
 const {
   myProfilePicture,
-  profilePictures,
   getUserProfilePicture,
-  setMyProfilePicture,
-  deleteMyProfilePicture,
   handlePeerConnected,
   initializeProfilePictures,
-  getProfileOriginalFileId
+  getProfileOriginalFileId,
+  createProfileHandlers
 } = useProfilePicture(provider, me, files, registerFileAvailability)
+
+// 공통 핸들러 생성 (캡슐화)
+const { handleUpload: handleProfileUpload, handleDelete: handleProfileDelete } = createProfileHandlers()
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 const showProfileModal = ref(false)
@@ -96,7 +98,7 @@ const handleUploadFile = async (file: File) => {
     console.log('업로드 완료:', fileId)
   } catch (error) {
     console.error('업로드 실패:', error)
-    alert('파일 업로드에 실패했습니다.')
+    await showAlert('파일 업로드에 실패했습니다.')
   } finally {
     isUploading.value = false
   }
@@ -116,7 +118,7 @@ const handleViewProfile = async (userId: string) => {
     const originalFileId = await getProfileOriginalFileId(userId)
 
     if (!originalFileId) {
-      alert('원본 프로필 사진이 없습니다.')
+      await showAlert('원본 프로필 사진이 없습니다.')
       return
     }
 
@@ -154,10 +156,10 @@ const handleViewProfile = async (userId: string) => {
         console.log('[ChatRoom] 썸네일로 표시 완료')
       } catch (thumbError) {
         console.error('[ChatRoom] 썸네일 표시 실패:', thumbError)
-        alert('프로필 사진을 불러올 수 없습니다.')
+        await showAlert('프로필 사진을 불러올 수 없습니다.')
       }
     } else {
-      alert('프로필 사진을 불러올 수 없습니다.')
+      await showAlert('프로필 사진을 불러올 수 없습니다.')
     }
   }
 }
@@ -208,47 +210,30 @@ const handleCloseProfileSettings = () => {
   showProfileModal.value = false
 }
 
-const handleProfileUpload = async (file: File) => {
-  try {
-    await setMyProfilePicture(file)
-    alert('프로필 사진이 설정되었습니다.')
-  } catch (error) {
-    console.error('[ChatRoom] 프로필 설정 실패:', error)
-    alert('프로필 사진 설정에 실패했습니다.')
-  }
-}
-
-const handleProfileDelete = async () => {
-  try {
-    await deleteMyProfilePicture()
-    alert('프로필 사진이 삭제되었습니다.')
-  } catch (error) {
-    console.error('[ChatRoom] 프로필 삭제 실패:', error)
-    alert('프로필 사진 삭제에 실패했습니다.')
-  }
-}
 const handleClearChat = () => messagesMap.clear()
 const handleReload = () => window.location.reload()
 
 const handleForceResync = async () => {
-  if (!confirm('🔄 동기화 오류가 발생했나요?\n\n로컬 데이터를 삭제하고 다른 피어의 데이터로 재동기화합니다.\n\n계속하시겠습니까?')) return
+  const confirmed = await showConfirm('🔄 동기화 오류가 발생했나요?\n\n로컬 데이터를 삭제하고 다른 피어의 데이터로 재동기화합니다.\n\n계속하시겠습니까?')
+  if (!confirmed) return
 
   try {
     const success = await forceResync()
     if (success) {
-      alert('✅ 재동기화가 완료되었습니다.')
+      await showAlert('✅ 재동기화가 완료되었습니다.')
       window.location.reload()
     } else {
-      alert('❌ 재동기화에 실패했습니다.')
+      await showAlert('❌ 재동기화에 실패했습니다.')
     }
   } catch (error) {
     console.error('[ChatRoom] 재동기화 실패:', error)
-    alert('❌ 재동기화 중 오류가 발생했습니다.')
+    await showAlert('❌ 재동기화 중 오류가 발생했습니다.')
   }
 }
 
 const handleResetAll = async () => {
-  if (!confirm(`⚠️ 경고: "${activeRoomId}" 방의 모든 데이터를 초기화합니다. 계속하시겠습니까?`)) return
+  const confirmed = await showConfirm(`⚠️ 경고: "${activeRoomId}" 방의 모든 데이터를 초기화합니다. 계속하시겠습니까?`)
+  if (!confirmed) return
 
   try {
     console.log(`[DEBUG] ${activeRoomId} 방 초기화 시작`)
@@ -268,7 +253,7 @@ const handleResetAll = async () => {
     window.location.reload()
   } catch (error) {
     console.error('[DEBUG] 초기화 실패:', error)
-    alert('❌ 초기화 중 오류가 발생했습니다.')
+    await showAlert('❌ 초기화 중 오류가 발생했습니다.')
   }
 }
 // Message watching
@@ -417,6 +402,8 @@ onMounted(async () => {
       @send="handleSend"
       @uploadFile="handleUploadFile"
       @openProfileSettings="handleOpenProfileSettings"
+      :myProfilePicture="myProfilePicture"
+      :userName="myName"
     />
 
     <!-- 프로필 설정 모달 -->

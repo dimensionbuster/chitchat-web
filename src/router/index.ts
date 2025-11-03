@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import Home from '../pages/Home.vue'
 import ChatRoom from '../pages/ChatRoom.vue'
 import Notification from '../pages/Notification.vue'
+import Dialog from '../pages/Dialog.vue'
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -30,6 +31,16 @@ const router = createRouter({
         text: (route.query.text as string) || '',
         messageId: (route.query.messageId as string) || '',
         roomId: (route.query.roomId as string) || '',
+      }),
+    },
+    {
+      path: '/dialog',
+      name: 'Dialog',
+      component: Dialog,
+      props: (route) => ({
+        message: (route.query.message as string) || '',
+        type: (route.query.type as 'alert' | 'confirm') || 'alert',
+        dialogId: (route.query.dialogId as string) || '',
       }),
     },
   ],

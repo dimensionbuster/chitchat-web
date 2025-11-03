@@ -148,45 +148,57 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
       timestamp: Date.now(),
     }
 
-    provider.awareness.setLocalStateField('fileTransferOffer', offerMessage)
+    // 🔥 고유 키 사용 (여러 파일 동시 전송 지원)
+    const offerKey = `fileTransferOffer-${fileId}-${Date.now()}`
+    provider.awareness.setLocalStateField(offerKey, offerMessage)
+
+    console.log(`[WebRTC] Offer 전송: ${offerKey}`)
 
     // Offer를 수신자가 받을 수 있도록 잠시 유지
     setTimeout(() => {
-      provider.awareness.setLocalStateField('fileTransferOffer', null)
-    }, 3000)
+      provider.awareness.setLocalStateField(offerKey, null)
+    }, 5000)
 
     // Answer 대기
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
+        console.error(`[WebRTC] Answer 타임아웃 - ICE: ${pc.iceConnectionState}, PC: ${pc.connectionState}, Channel: ${channel.readyState}`)
         reject(new Error('Answer 타임아웃'))
         cleanup(connectionId)
       }, 30000) // 타임아웃 30초로 증가
 
       const checkAnswer = () => {
         for (const [, state] of provider.awareness.getStates()) {
-          const answer = state.fileTransferAnswer as FileTransferAnswer | undefined
+          const stateObj = state as Record<string, unknown>
 
-          if (answer) {
-            console.log(`[WebRTC] Answer 감지:`, {
-              fileId: answer.fileId,
-              targetUuid: answer.targetUuid,
-              receiverUuid: answer.receiverUuid,
-              expected: { fileId, myUuid, targetUuid }
-            })
-          }
+          // 🔥 모든 'fileTransferAnswer-'로 시작하는 키 탐색
+          for (const key in stateObj) {
+            if (!key.startsWith('fileTransferAnswer-')) continue
 
-          // Guard: Answer가 없거나 조건에 맞지 않으면 스킵
-          if (!answer) return
-          if (answer.fileId !== fileId) return
-          if (answer.targetUuid !== myUuid) return
-          if (answer.receiverUuid !== targetUuid) return
+            const answer = stateObj[key] as FileTransferAnswer | undefined
 
-          // Answer 처리
-          clearTimeout(timeout)
-          provider.awareness.off('change', checkAnswer)
+            if (answer) {
+              console.log(`[WebRTC] Answer 감지:`, {
+                key,
+                fileId: answer.fileId,
+                targetUuid: answer.targetUuid,
+                receiverUuid: answer.receiverUuid,
+                expected: { fileId, myUuid, targetUuid }
+              })
+            }
 
-          // Remote description 설정
-          pc.setRemoteDescription(answer.sdp)
+            // Guard: Answer가 없거나 조건에 맞지 않으면 스킵
+            if (!answer) continue
+            if (answer.fileId !== fileId) continue
+            if (answer.targetUuid !== myUuid) continue
+            if (answer.receiverUuid !== targetUuid) continue
+
+            // Answer 처리
+            clearTimeout(timeout)
+            provider.awareness.off('change', checkAnswer)
+
+            // Remote description 설정
+            pc.setRemoteDescription(answer.sdp)
             .then(() => {
               console.log(`[WebRTC] Answer 수락`)
 
@@ -205,7 +217,6 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
 
               const openHandler = () => {
                 channel.removeEventListener('open', openHandler)
-                console.log(`[WebRTC] DataChannel 연결 완료`)
                 resolve(channel)
               }
               channel.addEventListener('open', openHandler)
@@ -218,7 +229,8 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
               }, 15000)
             })
             .catch(reject)
-          return
+            return
+          }
         }
       }
 
@@ -244,13 +256,12 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
 
     // DataChannel 핸들러 설정
     const channelPromise = new Promise<RTCDataChannel>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('DataChannel 타임아웃')), 30000) // 30초로 증가
+      const timeout = setTimeout(() => reject(new Error('DataChannel 타임아웃')), 30000)
 
       pc.ondatachannel = (event) => {
         clearTimeout(timeout)
         const ch = event.channel
         ch.onclose = () => cleanup(connectionId)
-        console.log(`[WebRTC] DataChannel 수신됨`)
         resolve(ch)
       }
     })
@@ -271,12 +282,16 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
       timestamp: Date.now(),
     }
 
-    provider.awareness.setLocalStateField('fileTransferAnswer', answerMessage)
+    // 🔥 고유 키 사용 (여러 파일 동시 전송 지원)
+    const answerKey = `fileTransferAnswer-${offer.fileId}-${Date.now()}`
+    provider.awareness.setLocalStateField(answerKey, answerMessage)
+
+    console.log(`[WebRTC] Answer 전송: ${answerKey}`)
 
     // Answer를 송신자가 받을 수 있도록 잠시 유지
     setTimeout(() => {
-      provider.awareness.setLocalStateField('fileTransferAnswer', null)
-    }, 3000)
+      provider.awareness.setLocalStateField(answerKey, null)
+    }, 5000)
 
     // 대기 중인 ICE candidate 추가
     const pending = pendingIceCandidates.value.get(connectionId) || []
@@ -300,7 +315,6 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
 
       const openHandler = () => {
         clearTimeout(timeout)
-        console.log(`[WebRTC] 수신 채널 열림`)
         channel.removeEventListener('open', openHandler)
         resolve()
       }

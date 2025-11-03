@@ -59,4 +59,5 @@ export type ProfilePictureAwareness = {
   userId: string
   hasProfilePicture: boolean
   timestamp: number
+  originalFileId?: string // 원본 파일 ID (다른 피어가 요청할 수 있도록)
 }

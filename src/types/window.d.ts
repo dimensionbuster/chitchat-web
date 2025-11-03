@@ -10,6 +10,11 @@ export interface ElectronApi {
   windowClose: () => void
   openChatRoom: (roomId: string, userName?: string) => void
   showMainWindow: () => void
+  // 커스텀 다이얼로그 API
+  showDialog: (message: string) => Promise<void>
+  showConfirm: (message: string) => Promise<boolean>
+  closeDialog: (dialogId: string, result: boolean) => void
+  resizeAndShowDialog: (dialogId: string, width: number, height: number) => void
 }
 
 declare global {

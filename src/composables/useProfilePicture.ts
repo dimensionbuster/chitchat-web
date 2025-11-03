@@ -27,6 +27,7 @@ import {
   PROFILE_PICTURE_QUALITY,
   PROFILE_PICTURE_MAX_BYTES
 } from './fileConstants'
+import { showAlert } from './useCustomDialog'
 
 /**
  * 이미지 파일을 리사이징하고 압축
@@ -197,15 +198,16 @@ export function useProfilePicture(
 
       console.log(`[ProfilePicture] 프로필 사진 로컬 저장 완료: ${size} bytes`)
 
-      // awareness에 프로필 사진 존재 알림
+      // awareness에 프로필 사진 존재 알림 (originalFileId 포함)
       if (provider && provider.awareness) {
         provider.awareness.setLocalStateField('profilePicture', {
           userId: myUserId,
           hasProfilePicture: true,
-          timestamp: profile.timestamp
+          timestamp: profile.timestamp,
+          originalFileId // 원본 파일 ID 포함하여 다른 피어가 요청할 수 있도록
         } as ProfilePictureAwareness)
 
-        console.log('[ProfilePicture] awareness 업데이트 완료')
+        console.log('[ProfilePicture] awareness 업데이트 완료 (originalFileId 포함)')
 
         // 연결된 모든 피어에게 프로필 전송
         const peers = Array.from(provider.awareness.getStates().keys())
@@ -242,13 +244,53 @@ export function useProfilePicture(
       myProfilePicture.value = null
       profilePictures.delete(myUserId)
 
-      // awareness 업데이트
+      // awareness 업데이트 (삭제도 전파)
       if (provider && provider.awareness) {
+        const deleteTimestamp = Date.now()
+
         provider.awareness.setLocalStateField('profilePicture', {
           userId: myUserId,
           hasProfilePicture: false,
-          timestamp: Date.now()
+          timestamp: deleteTimestamp,
+          originalFileId: undefined // 삭제 시에도 명시적으로 undefined 전달
         } as ProfilePictureAwareness)
+
+        console.log('[ProfilePicture] awareness 업데이트 완료 (삭제 전파)')
+
+        // 연결된 모든 피어에게 삭제 이벤트 전송
+        const peers = Array.from(provider.awareness.getStates().keys())
+          .filter(clientId => {
+            const state = provider.awareness!.getStates().get(clientId)
+            const userUuid = (state as Record<string, unknown>)?.userUuid as string | undefined
+            return userUuid && userUuid !== myUserId
+          })
+          .map(clientId => {
+            const state = provider.awareness!.getStates().get(clientId)
+            return (state as Record<string, unknown>)?.userUuid as string
+          })
+
+        console.log(`[ProfilePicture] 연결된 피어 ${peers.length}명에게 삭제 이벤트 전송`)
+
+        // 각 피어에게 삭제 이벤트 전송
+        for (const peerId of peers) {
+          if (peerId) {
+            const transferKey = `profileDelete-${myUserId}-${peerId}-${deleteTimestamp}`
+
+            provider.awareness.setLocalStateField(transferKey, {
+              userId: myUserId,
+              targetUserId: peerId,
+              deleted: true,
+              timestamp: deleteTimestamp
+            })
+
+            console.log(`[ProfilePicture] 삭제 이벤트 전송: ${peerId.slice(-8)}`)
+
+            // 2초 후 정리
+            setTimeout(() => {
+              provider.awareness?.setLocalStateField(transferKey, null)
+            }, 2000)
+          }
+        }
       }
 
       console.log(`[ProfilePicture] 프로필 사진 삭제 완료`)
@@ -325,8 +367,47 @@ export function useProfilePicture(
       for (const [, state] of provider.awareness!.getStates()) {
         const stateObj = state as Record<string, unknown>
 
-        // 프로필 전송 데이터 확인
+        // 프로필 전송 및 삭제 데이터 확인
         for (const key in stateObj) {
+          // 프로필 삭제 이벤트 처리
+          if (key.startsWith('profileDelete-')) {
+            const deleteData = stateObj[key]
+
+            // Guard: 데이터가 없거나 객체가 아니면 스킵
+            if (!deleteData || typeof deleteData !== 'object') continue
+
+            const deleteEvent = deleteData as {
+              userId: string
+              targetUserId: string
+              deleted: boolean
+              timestamp: number
+            }
+
+            // Guard: 이미 처리한 삭제인지 확인
+            const deleteId = `delete-${deleteEvent.userId}-${deleteEvent.timestamp}`
+            if (processedTransfers.has(deleteId)) continue
+
+            console.log(`[ProfilePicture] 프로필 삭제 감지: ${key}, from: ${deleteEvent.userId?.slice(-8)}, to: ${deleteEvent.targetUserId?.slice(-8)}`)
+
+            // Guard: 내가 수신자가 아니거나 내가 발신자인 경우 스킵
+            if (deleteEvent.targetUserId !== myUserId) continue
+            if (deleteEvent.userId === myUserId) continue
+
+            // 삭제 처리 마커 추가
+            processedTransfers.add(deleteId)
+
+            if (deleteEvent.deleted) {
+              console.log(`[ProfilePicture] 프로필 사진 삭제 수신: ${deleteEvent.userId.slice(-8)}`)
+
+              // 로컬에서 삭제
+              await deleteProfilePicture(deleteEvent.userId)
+              profilePictures.delete(deleteEvent.userId)
+
+              console.log(`[ProfilePicture] 프로필 사진 삭제 완료: ${deleteEvent.userId.slice(-8)}`)
+            }
+            continue
+          }
+
           // Guard: 프로필 전송 키가 아니면 스킵
           if (!key.startsWith('profileTransfer-')) continue
 
@@ -516,18 +597,40 @@ export function useProfilePicture(
       myProfilePicture.value = toDataUrl(myProfile.imageData)
       profilePictures.set(myUserId, myProfile.imageData)
       console.log(`[ProfilePicture] 내 프로필 로드 완료: ${myProfile.size} bytes`)
+
+      // 🔥 채팅방에서 초기화할 때: 원본 파일 메타데이터 등록 (Home에서 설정한 경우)
+      if (files && myProfile.originalFileId) {
+        // 원본 파일이 캐시에 있는지 확인
+        const cachedBlob = await getCachedFile(myProfile.originalFileId)
+        if (cachedBlob && !files.has(myProfile.originalFileId)) {
+          const meta: FileMeta = {
+            name: 'profile.jpg',
+            size: cachedBlob.size,
+            type: cachedBlob.type
+          }
+          files.set(myProfile.originalFileId, meta)
+          console.log(`[ProfilePicture] 원본 파일 메타 등록 (채팅방 진입 시): ${myProfile.originalFileId}`)
+
+          // 파일 소유권 브로드캐스트
+          if (registerFileAvailability) {
+            await registerFileAvailability(myProfile.originalFileId)
+            console.log(`[ProfilePicture] 원본 파일 소유권 브로드캐스트 (채팅방 진입 시)`)
+          }
+        }
+      }
     } else {
       console.log('[ProfilePicture] 내 프로필 없음')
     }
 
-    // awareness에 프로필 존재 알림
+    // awareness에 프로필 존재 알림 (originalFileId 포함)
     if (provider && provider.awareness && myProfile) {
       provider.awareness.setLocalStateField('profilePicture', {
         userId: myUserId,
         hasProfilePicture: true,
-        timestamp: myProfile.timestamp
+        timestamp: myProfile.timestamp,
+        originalFileId: myProfile.originalFileId // 원본 파일 ID 포함
       } as ProfilePictureAwareness)
-      console.log('[ProfilePicture] awareness에 프로필 존재 알림')
+      console.log('[ProfilePicture] awareness에 프로필 존재 알림 (originalFileId 포함)')
     }
 
     // 수신 리스너 설정
@@ -548,6 +651,37 @@ export function useProfilePicture(
     return profile?.originalFileId || null
   }
 
+  /**
+   * UI 핸들러 생성 (공통 로직 캡슐화)
+   * Vue 컴포넌트에서 사용할 수 있는 핸들러 반환
+   */
+  const createProfileHandlers = () => {
+    const handleUpload = async (file: File): Promise<void> => {
+      try {
+        await setMyProfilePicture(file)
+        await showAlert('프로필 사진이 설정되었습니다.')
+      } catch (error) {
+        console.error('[ProfilePicture] 업로드 실패:', error)
+        await showAlert('프로필 사진 설정에 실패했습니다.')
+      }
+    }
+
+    const handleDelete = async (): Promise<void> => {
+      try {
+        await deleteMyProfilePicture()
+        await showAlert('프로필 사진이 삭제되었습니다.')
+      } catch (error) {
+        console.error('[ProfilePicture] 삭제 실패:', error)
+        await showAlert('프로필 사진 삭제에 실패했습니다.')
+      }
+    }
+
+    return {
+      handleUpload,
+      handleDelete
+    }
+  }
+
   return {
     // 상태
     myProfilePicture,
@@ -561,5 +695,6 @@ export function useProfilePicture(
     handlePeerConnected,
     initializeProfilePictures,
     getProfileOriginalFileId,
+    createProfileHandlers,
   }
 }

@@ -21,7 +21,7 @@ const emit = defineEmits<{
       <button @click="emit('reload')">Reload</button>
       <button @click="emit('forceResync')" class="warning">🔄 Re-sync</button>
       <button @click="emit('goHome')">Go Home</button>
-      <button @click="emit('clearChat')">Clear Chat</button>
+      <!-- <button @click="emit('clearChat')">Clear Chat</button> -->
       <!-- <button @click="emit('resetAll')" class="danger">🔧 Reset All (Debug)</button> -->
     </div>
   </div>

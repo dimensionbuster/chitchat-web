@@ -3,6 +3,7 @@ defineOptions({ name: 'HomePage' })
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProfilePicture } from '@/composables/useProfilePicture'
+import { showAlert } from '@/composables/useCustomDialog'
 import ProfilePictureUpload from '@/components/ProfilePictureUpload.vue'
 
 const router = useRouter()
@@ -20,35 +21,17 @@ const myUserId = `user-${uuid}`
 // 프로필 사진 기능 (네트워크 연결 전이므로 provider는 null)
 const {
   myProfilePicture,
-  setMyProfilePicture,
-  deleteMyProfilePicture,
-  initializeProfilePictures
+  initializeProfilePictures,
+  createProfileHandlers
 } = useProfilePicture(null, myUserId)
 
-const handleProfileUpload = async (file: File) => {
-  try {
-    await setMyProfilePicture(file)
-    alert('프로필 사진이 설정되었습니다.')
-  } catch (error) {
-    console.error('[Home] 프로필 설정 실패:', error)
-    alert('프로필 사진 설정에 실패했습니다.')
-  }
-}
+// 공통 핸들러 생성 (캡슐화)
+const { handleUpload, handleDelete } = createProfileHandlers()
 
-const handleProfileDelete = async () => {
-  try {
-    await deleteMyProfilePicture()
-    alert('프로필 사진이 삭제되었습니다.')
-  } catch (error) {
-    console.error('[Home] 프로필 삭제 실패:', error)
-    alert('프로필 사진 삭제에 실패했습니다.')
-  }
-}
-
-const goChat = () => {
+const goChat = async () => {
   const trimmedRoomId = roomId.value.trim()
   if (trimmedRoomId === '') {
-    alert('room id is required')
+    await showAlert('room id is required')
     return
   }
 
@@ -83,8 +66,8 @@ onMounted(async () => {
         <h3 style="margin: 0; font-size: 16px">프로필 사진</h3>
         <ProfilePictureUpload
           :currentImage="myProfilePicture"
-          @upload="handleProfileUpload"
-          @delete="handleProfileDelete"
+          @upload="handleUpload"
+          @delete="handleDelete"
         />
       </div>
 
