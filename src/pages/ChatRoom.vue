@@ -11,6 +11,7 @@ import { useGlobalDataChannelQueue } from '../composables/useGlobalDataChannelQu
 import { useProfilePicture } from '../composables/useProfilePicture'
 import { getCachedFile } from '../composables/useStorageFileCache'
 import { showAlert, showConfirm } from '../composables/useCustomDialog'
+import { useConnectedUsers } from '../composables/useConnectedUsers'
 import router from '@/router'
 import ChatHeader from '@/components/ChatHeader.vue'
 import MessageList from '@/components/MessageList.vue'
@@ -42,7 +43,7 @@ const isUploading = ref(false)
 const isInitialLoad = ref(true)
 
 // Yjs & File Systems
-const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync } = await useYjs(activeRoomId, me)
+const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync } = await useYjs(activeRoomId, me, myName.value)
 
 // 글로벌 큐 매니저 초기화
 const { setProvider } = useGlobalDataChannelQueue({
@@ -70,6 +71,9 @@ const {
 
 // 공통 핸들러 생성 (캡슐화)
 const { handleUpload: handleProfileUpload, handleDelete: handleProfileDelete } = createProfileHandlers()
+
+// 접속자 목록 기능
+const { connectedUsers, userCount } = useConnectedUsers(provider, me)
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 const showProfileModal = ref(false)
@@ -373,6 +377,8 @@ onMounted(async () => {
   <div class="chat-room">
     <ChatHeader
       :roomId="activeRoomId"
+      :userCount="userCount"
+      :connectedUsers="connectedUsers"
       @reload="handleReload"
       @forceResync="handleForceResync"
       @goHome="handleGoHome"

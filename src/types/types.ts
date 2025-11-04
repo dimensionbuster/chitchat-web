@@ -2,7 +2,8 @@ export type ChatMessage = {
   id: string
   authorTrueUuid: string
   authorName: string
-  ts: number
+  ts: number // 로컬 타임스탬프 (표시용)
+  lamport: number // 논리적 시계 (정렬용)
   text?: string
   fileId?: string // CID 대신 고유한 파일 ID 사용
 }

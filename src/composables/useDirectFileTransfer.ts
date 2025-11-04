@@ -200,7 +200,7 @@ export function useDirectFileTransfer(
 
         // 이미 받은 청크는 건너뜀
         if (receivedChunksSet && receivedChunksSet.has(i)) {
-          updateProgress(transferKey, i + 1)
+          // UI 업데이트 없이 내부 상태만 업데이트 (이어받기 시 불필요한 UI 업데이트 방지)
           continue
         }
 
@@ -231,14 +231,17 @@ export function useDirectFileTransfer(
         await new Promise((resolve) => setTimeout(resolve, 0))
         channel.send(chunk)
 
-        updateProgress(transferKey, i + 1)
+        // UI 업데이트 최적화: 100청크(6.4MB)마다만 업데이트
+        const shouldUpdate = (i + 1) % 100 === 0 || i === totalChunks - 1
+        updateProgress(transferKey, i + 1, shouldUpdate)
 
         // 진행 상황 콜백
         if (onProgress) {
           onProgress(end, fileData.byteLength)
         }
 
-        if (i % 20 === 0 || i === totalChunks - 1) {
+        // 로그 최적화: 100청크(6.4MB)마다만 출력
+        if (shouldUpdate) {
           console.log(`[#16] P2P 전송: ${i + 1}/${totalChunks} (${(((i + 1) / totalChunks) * 100).toFixed(0)}%)`)
         }
       }
@@ -462,7 +465,9 @@ export function useDirectFileTransfer(
             const base64Chunk = arrayBufferToBase64(event.data as ArrayBuffer)
             addChunk(partialState!, currentIndex, base64Chunk)
 
-            updateProgress(transferKey, partialState!.receivedChunks.size)
+            // UI 업데이트 최적화: 100청크(6.4MB)마다만 업데이트
+            const shouldUpdate = partialState!.receivedChunks.size % 100 === 0 || isDownloadComplete(partialState!)
+            updateProgress(transferKey, partialState!.receivedChunks.size, shouldUpdate)
 
             // 시간 기반 DB 저장 (렉 방지: 2초마다만 저장)
             const now = Date.now()
@@ -474,8 +479,8 @@ export function useDirectFileTransfer(
               lastSaveTime = now
             }
 
-            // 진행 상황 로그
-            if (partialState!.receivedChunks.size % 20 === 0 || isDownloadComplete(partialState!)) {
+            // 로그 최적화: 100청크(6.4MB)마다만 출력
+            if (shouldUpdate) {
               console.log(`[#20] P2P 수신: ${partialState!.receivedChunks.size}/${offer.totalChunks} (${((partialState!.receivedChunks.size / offer.totalChunks) * 100).toFixed(0)}%)`)
             }
           }

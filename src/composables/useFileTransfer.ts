@@ -397,7 +397,10 @@ export function useFileTransfer(
           if (chunk) {
             addChunk(state, i, chunk as string)
             chunks[i] = chunk as string
-            updateProgress(state.fileId, state.receivedChunks.size)
+
+            // UI 업데이트 최적화: 10청크마다만 UI 업데이트 (작은 파일이므로 더 자주)
+            const shouldUpdate = state.receivedChunks.size % 10 === 0
+            updateProgress(state.fileId, state.receivedChunks.size, shouldUpdate)
 
             if (state.receivedChunks.size % 10 === 0) {
               saveDownloadState(state).catch(console.error)

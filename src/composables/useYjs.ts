@@ -42,6 +42,18 @@ async function createYjsInstance(roomId: string) {
   const messagesMap = doc.getMap<ChatMessage>('messagesMap')
   const files = doc.getMap<FileMeta>('files')
 
+  // 🕐 Lamport 논리적 시계 (메시지 순서 보장)
+  let lamportClock = 0
+
+  const updateLamportClock = (receivedClock?: number) => {
+    if (receivedClock !== undefined) {
+      lamportClock = Math.max(lamportClock, receivedClock) + 1
+    } else {
+      lamportClock += 1
+    }
+    return lamportClock
+  }
+
   // 정렬된 전체 메시지 배열 (타임스탬프 순)
   const sortedMessagesRef = ref<ChatMessage[]>([])
 
@@ -58,13 +70,28 @@ async function createYjsInstance(roomId: string) {
   const updateSortedMessages = () => {
     const allMessages = Array.from(messagesMap.values())
 
+    // Lamport 시계 값을 최대값으로 업데이트 (다른 피어의 메시지 수신 시)
+    allMessages.forEach(msg => {
+      if (msg.lamport > lamportClock) {
+        lamportClock = msg.lamport
+      }
+    })
+
+    // Lamport 시계 기준으로 정렬 (같으면 타임스탬프, 그것도 같으면 ID)
+    const sortMessages = (msgs: ChatMessage[]) =>
+      msgs.sort((a, b) => {
+        if (a.lamport !== b.lamport) return a.lamport - b.lamport
+        if (a.ts !== b.ts) return a.ts - b.ts
+        return a.id.localeCompare(b.id)
+      })
+
     // 메시지가 적으면 전체 정렬
     if (allMessages.length <= SORT_WINDOW) {
-      sortedMessagesRef.value = allMessages.sort((a, b) => a.ts - b.ts)
+      sortedMessagesRef.value = sortMessages(allMessages)
     } else {
       // 대용량: 최근 메시지만 정렬 (오래된 메시지는 이미 정렬되어 있다고 가정)
       const oldMessages = allMessages.slice(0, -SORT_WINDOW)
-      const recentMessages = allMessages.slice(-SORT_WINDOW).sort((a, b) => a.ts - b.ts)
+      const recentMessages = sortMessages(allMessages.slice(-SORT_WINDOW))
       sortedMessagesRef.value = [...oldMessages, ...recentMessages]
     }
 
@@ -91,14 +118,39 @@ async function createYjsInstance(roomId: string) {
 
   await new Promise<void>((resolve) => {
     persistence.once('synced', () => {
-      // 마이그레이션: Y.Array → Y.Map
+      // 마이그레이션: Y.Array → Y.Map + Lamport 시계 추가
       if (oldMessages.length > 0 && messagesMap.size === 0) {
         doc.transact(() => {
-          oldMessages.toArray().forEach(msg => {
+          oldMessages.toArray().forEach((msg, index) => {
             const messageId = msg.id || `${msg.ts}-${crypto.randomUUID()}`
-            messagesMap.set(messageId, { ...msg, id: messageId })
+            // 기존 메시지에 lamport 값이 없으면 타임스탬프 기준으로 생성
+            const existingLamport = 'lamport' in msg ? (msg as ChatMessage).lamport : undefined
+            const lamport = existingLamport ?? index
+            messagesMap.set(messageId, { ...msg, id: messageId, lamport })
           })
         })
+      }
+
+      // Lamport 시계가 없는 기존 메시지에 추가
+      let needsUpdate = false
+      const updates: [string, ChatMessage][] = []
+      messagesMap.forEach((msg, id) => {
+        if (!('lamport' in msg)) {
+          needsUpdate = true
+          // 타임스탬프 기준으로 정렬된 순서를 lamport 값으로 사용
+          updates.push([id, msg])
+        }
+      })
+
+      if (needsUpdate) {
+        doc.transact(() => {
+          // 타임스탬프 순으로 정렬하여 lamport 값 할당
+          updates.sort((a, b) => a[1].ts - b[1].ts)
+          updates.forEach(([id, msg], index) => {
+            messagesMap.set(id, { ...msg, lamport: index })
+          })
+        })
+        console.log(`[#2-1] Lamport 마이그레이션: ${updates.length}개 메시지 업데이트`)
       }
 
       updateSortedMessages()
@@ -111,7 +163,13 @@ async function createYjsInstance(roomId: string) {
   console.log('[#3] WebRTC Provider 생성 - 백그라운드 동기화 시작')
   const provider = new WebrtcProvider(roomId, doc, {
     signaling: SIGNAL_URLS,
-    peerOpts: { config: { iceServers } },
+    peerOpts: {
+      config: {
+        iceServers,
+        // 연결 유지 설정 강화
+        iceCandidatePoolSize: 10, // ICE 후보 미리 수집
+      },
+    },
     maxConns: 20,
     filterBcConns: true,
   })
@@ -119,10 +177,12 @@ async function createYjsInstance(roomId: string) {
   waitForSync(provider)
 
   _setupProviderListeners(provider)
+  _setupBackgroundConnectionMonitor(provider)
 
   const sendTextMessage = (authorTrueUuid: string, authorName: string, text: string) => {
     if (!text.trim()) return
     const timestamp = Date.now()
+    const lamport = updateLamportClock()
     const messageId = `${timestamp}-${crypto.randomUUID()}`
     messagesMap.set(messageId, {
       id: messageId,
@@ -130,12 +190,14 @@ async function createYjsInstance(roomId: string) {
       authorName,
       text,
       ts: timestamp,
+      lamport,
     })
   }
 
   const attachFileMeta = (fileId: string, meta: FileMeta, authorTrueUuid: string, authorName = authorTrueUuid) => {
     files.set(fileId, meta)
     const timestamp = Date.now()
+    const lamport = updateLamportClock()
     const messageId = `${timestamp}-${crypto.randomUUID()}`
     messagesMap.set(messageId, {
       id: messageId,
@@ -143,6 +205,7 @@ async function createYjsInstance(roomId: string) {
       authorName,
       fileId,
       ts: timestamp,
+      lamport,
     })
   }
 
@@ -224,17 +287,45 @@ async function createYjsInstance(roomId: string) {
   return instance
 }
 
-const setUserAwareness = (provider: WebrtcProvider, userUuid?: string) => {
+const setUserAwareness = (provider: WebrtcProvider, userUuid?: string, nickname?: string) => {
   if (userUuid) {
     provider.awareness.setLocalStateField('userUuid', userUuid)
   }
+  if (nickname) {
+    provider.awareness.setLocalStateField('nickname', nickname)
+  }
 }
 
-export async function useYjs(roomId = ROOM_ID, userUuid?: string) {
+/**
+ * Keepalive 메커니즘: 주기적으로 awareness 갱신하여 연결 유지
+ *
+ * WebRTC는 idle 상태가 지속되면 연결을 정리할 수 있습니다.
+ * 주기적으로 작은 데이터를 전송하여 연결이 활성 상태임을 유지합니다.
+ */
+function _setupKeepalive(provider: WebrtcProvider) {
+  const KEEPALIVE_INTERVAL = 30000 // 30초마다 keepalive
+
+  const keepaliveInterval = setInterval(() => {
+    if (provider.connected) {
+      // awareness heartbeat 전송
+      provider.awareness.setLocalStateField('keepalive', Date.now())
+
+      // 디버깅용 로그 (필요시 주석 해제)
+      // console.log('[Yjs] Keepalive 전송')
+    }
+  }, KEEPALIVE_INTERVAL)
+
+  // 정리 함수
+  return () => {
+    clearInterval(keepaliveInterval)
+  }
+}
+
+export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: string) {
   const cached = yjsInstances.get(roomId)
   if (cached) {
     const instance = await cached
-    setUserAwareness(instance.provider, userUuid)
+    setUserAwareness(instance.provider, userUuid, nickname)
     if (!instance.provider.connected) {
       instance.provider.connect()
     }
@@ -244,7 +335,13 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string) {
   const instancePromise = createYjsInstance(roomId)
   yjsInstances.set(roomId, instancePromise)
   const instance = await instancePromise
-  setUserAwareness(instance.provider, userUuid)
+  setUserAwareness(instance.provider, userUuid, nickname)
+
+  // Keepalive 시작 (userUuid가 있을 때만)
+  if (userUuid) {
+    _setupKeepalive(instance.provider)
+  }
+
   return instance
 }
 
@@ -262,6 +359,111 @@ function _setupProviderListeners(provider: WebrtcProvider) {
       console.log('[#7] Yjs 동기화 완료')
     }
   })
+}
+
+/**
+ * 백그라운드 연결 모니터링 및 자동 재연결
+ *
+ * 문제:
+ * - 브라우저/Electron이 백그라운드 탭의 WebRTC 연결을 정리할 수 있음
+ * - Y-webrtc는 연결 끊김을 자동으로 복구하지 않음
+ *
+ * 해결:
+ * - visibility change 이벤트로 백그라운드 진입/복귀 감지
+ * - 주기적 연결 상태 체크 (heartbeat)
+ * - 연결 끊김 감지 시 자동 재연결
+ */
+function _setupBackgroundConnectionMonitor(provider: WebrtcProvider) {
+  let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+  let reconnectAttempts = 0
+  const MAX_RECONNECT_ATTEMPTS = 5
+  const HEARTBEAT_INTERVAL = 10000 // 10초마다 연결 상태 체크
+  const RECONNECT_DELAY = 2000 // 2초 후 재연결 시도
+
+  // 연결 상태 체크
+  const checkConnection = () => {
+    if (!provider.connected) {
+      console.warn(`[Yjs] 연결 끊김 감지 (시도: ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`)
+
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++
+
+        // 재연결 시도
+        setTimeout(() => {
+          console.log('[Yjs] 재연결 시도...')
+          provider.connect()
+
+          // 재연결 성공 여부 확인
+          setTimeout(() => {
+            if (provider.connected) {
+              console.log('[Yjs] 재연결 성공')
+              reconnectAttempts = 0
+            } else {
+              console.warn('[Yjs] 재연결 실패')
+            }
+          }, 3000)
+        }, RECONNECT_DELAY)
+      } else {
+        console.error('[Yjs] 최대 재연결 시도 횟수 초과')
+      }
+    } else {
+      // 연결되어 있으면 카운터 리셋
+      reconnectAttempts = 0
+    }
+  }
+
+  // 주기적 heartbeat 시작
+  const startHeartbeat = () => {
+    if (heartbeatInterval) return
+
+    console.log('[Yjs] 연결 모니터링 시작')
+    heartbeatInterval = setInterval(checkConnection, HEARTBEAT_INTERVAL)
+  }
+
+  // heartbeat 중지
+  const stopHeartbeat = () => {
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval)
+      heartbeatInterval = null
+      console.log('[Yjs] 연결 모니터링 중지')
+    }
+  }
+
+  // Page Visibility API: 백그라운드/포그라운드 전환 감지
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        console.log('[Yjs] 백그라운드로 전환')
+        // 백그라운드에서도 heartbeat 유지 (연결 상태 모니터링)
+      } else {
+        console.log('[Yjs] 포그라운드로 복귀')
+        // 즉시 연결 상태 확인
+        checkConnection()
+      }
+    })
+  }
+
+  // provider 연결 상태 변경 이벤트
+  provider.on('status', (event: { connected: boolean }) => {
+    if (event.connected) {
+      console.log('[Yjs] Provider 연결됨')
+      reconnectAttempts = 0
+    } else {
+      console.warn('[Yjs] Provider 연결 끊김')
+      checkConnection()
+    }
+  })
+
+  // 초기 heartbeat 시작
+  startHeartbeat()
+
+  // 정리 함수 (필요시 호출)
+  return () => {
+    stopHeartbeat()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', checkConnection)
+    }
+  }
 }
 
 const CHUNK_SIZE = 64 * 1024

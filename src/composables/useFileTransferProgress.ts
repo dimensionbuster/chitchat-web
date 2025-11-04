@@ -26,6 +26,10 @@ const uploadQueueInfo = reactive({
   maxConcurrent: 2,
 })
 
+// UI 업데이트 쓰로틀링 (렉 방지)
+const UI_UPDATE_THROTTLE = 300 // 300ms마다만 UI 업데이트
+const lastUIUpdate = new Map<string, number>() // fileId -> timestamp
+
 /**
  * 파일 전송 진척도를 추적하는 composable
  */
@@ -56,14 +60,24 @@ export function useFileTransferProgress() {
   }
 
   /**
-   * 청크 수신/전송 업데이트
+   * 청크 수신/전송 업데이트 (쓰로틀링 적용)
    */
-  function updateProgress(fileId: string, receivedChunks: number) {
+  function updateProgress(fileId: string, receivedChunks: number, forceUpdate = false) {
     const transfer = transfers[fileId]
     if (!transfer) return
 
+    // 진행 상태는 항상 업데이트 (내부 상태)
     transfer.receivedChunks = receivedChunks
-    updateCounter.value++
+
+    // UI 업데이트는 쓰로틀링 (렉 방지)
+    const now = Date.now()
+    const lastUpdate = lastUIUpdate.get(fileId) || 0
+    const shouldUpdateUI = forceUpdate || (now - lastUpdate) >= UI_UPDATE_THROTTLE
+
+    if (shouldUpdateUI) {
+      updateCounter.value++
+      lastUIUpdate.set(fileId, now)
+    }
   }
 
   /**
@@ -76,6 +90,7 @@ export function useFileTransferProgress() {
     transfer.isComplete = true
     transfer.receivedChunks = transfer.totalChunks
     updateCounter.value++
+    lastUIUpdate.delete(fileId) // 완료 시 쓰로틀 타이머 제거
 
     // 완료된 전송은 5초 후에 제거 (큐 UI가 사라지지 않도록)
     setTimeout(() => {
@@ -89,6 +104,7 @@ export function useFileTransferProgress() {
     if (!transfer) return
 
     delete transfers[fileId]
+    lastUIUpdate.delete(fileId) // 쓰로틀 타이머 제거
     updateCounter.value++
   }
 
@@ -97,6 +113,7 @@ export function useFileTransferProgress() {
     if (!transfer) return
 
     delete transfers[fileId]
+    lastUIUpdate.delete(fileId) // 쓰로틀 타이머 제거
     updateCounter.value++
   }
 
