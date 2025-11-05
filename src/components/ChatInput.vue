@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatInput' })
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import ProfileAvatar from './ProfileAvatar.vue';
 
 defineProps<{
@@ -14,9 +14,13 @@ const emit = defineEmits<{
   send: [message: string]
   uploadFile: [file: File]
   openProfileSettings: []
+  exportSnapshot: []
+  import: []
 }>()
 
 const input = ref('')
+const showSnapshotMenu = ref(false)
+const snapshotMenuRef = ref<HTMLDivElement | null>(null)
 
 const onSend = () => {
   if (!input.value.trim()) return
@@ -31,6 +35,35 @@ const onFileChange = (e: Event) => {
   // input 초기화
   ;(e.target as HTMLInputElement).value = ''
 }
+
+const toggleSnapshotMenu = () => {
+  showSnapshotMenu.value = !showSnapshotMenu.value
+}
+
+const handleExportSnapshot = () => {
+  emit('exportSnapshot')
+  showSnapshotMenu.value = false
+}
+
+const handleImportSnapshot = () => {
+  emit('import')
+  showSnapshotMenu.value = false
+}
+
+// 외부 클릭 감지
+const handleClickOutside = (event: MouseEvent) => {
+  if (snapshotMenuRef.value && !snapshotMenuRef.value.contains(event.target as Node)) {
+    showSnapshotMenu.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 </script>
 
 <template>
@@ -76,6 +109,35 @@ const onFileChange = (e: Event) => {
         accept="image/*"
       />
     </label>
+
+    <!-- 스냅샷 메뉴 -->
+    <div ref="snapshotMenuRef" class="snapshot-menu-container">
+      <button
+        @click="toggleSnapshotMenu"
+        :disabled="disabled"
+        class="snapshot-button"
+        title="스냅샷"
+      >
+        💾
+      </button>
+
+      <div v-if="showSnapshotMenu" class="snapshot-dropdown">
+        <button
+          @click="handleExportSnapshot"
+          :disabled="disabled"
+          class="snapshot-menu-item"
+        >
+          📤 내보내기
+        </button>
+        <button
+          @click="handleImportSnapshot"
+          :disabled="disabled"
+          class="snapshot-menu-item"
+        >
+          📥 가져오기
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -148,5 +210,71 @@ const onFileChange = (e: Event) => {
 .file-upload-label.disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.snapshot-menu-container {
+  position: relative;
+}
+
+.snapshot-button {
+  height: 100%;
+  padding: 6px 12px;
+  cursor: pointer;
+  background: #6c6c6c;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 18px;
+  transition: opacity 0.2s;
+}
+
+.snapshot-button:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.snapshot-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.snapshot-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.snapshot-menu-item {
+  width: 100%;
+  padding: 10px 16px;
+  text-align: left;
+  background: white;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.snapshot-menu-item:hover:not(:disabled) {
+  background: #f0f0f0;
+}
+
+.snapshot-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.snapshot-menu-item + .snapshot-menu-item {
+  border-top: 1px solid #eee;
 }
 </style>

@@ -43,7 +43,7 @@ const isUploading = ref(false)
 const isInitialLoad = ref(true)
 
 // Yjs & File Systems
-const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync } = await useYjs(activeRoomId, me, myName.value)
+const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot } = await useYjs(activeRoomId, me, myName.value)
 
 // 글로벌 큐 매니저 초기화
 const { setProvider } = useGlobalDataChannelQueue({
@@ -371,6 +371,50 @@ onMounted(async () => {
   isInitialLoad.value = false
   console.log('[알림] 초기 로드 완료')
 })
+const handleExportSnapshot = async () => {
+  try {
+    const snapshotUint8Array = exportSnapshot()
+    const snapshotBlob = new Blob([snapshotUint8Array as BlobPart], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(snapshotBlob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `chatroom_${activeRoomId}_snapshot.yjs`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    console.error('[ChatRoom] 스냅샷 내보내기 실패:', error)
+    await showAlert('❌ 스냅샷 내보내기에 실패했습니다.')
+  }
+}
+const handleImportSnapshot = async () => {
+  try {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.yjs'
+    input.onchange = async () => {
+      if (input.files && input.files.length > 0) {
+        const file = input.files[0]
+        if (!file) return
+
+        // File을 Uint8Array로 변환
+        const arrayBuffer = await file.arrayBuffer()
+        const uint8Array = new Uint8Array(arrayBuffer)
+
+        importSnapshot(uint8Array)
+        await showAlert('✅ 스냅샷 가져오기가 완료되었습니다. 페이지를 새로고침합니다.')
+        window.location.reload()
+      }
+    }
+    document.body.appendChild(input)
+    input.click()
+    document.body.removeChild(input)
+  } catch (error) {
+    console.error('[ChatRoom] 스냅샷 가져오기 실패:', error)
+    await showAlert('❌ 스냅샷 가져오기에 실패했습니다.')
+  }
+}
 </script>
 
 <template>
@@ -408,6 +452,8 @@ onMounted(async () => {
       @send="handleSend"
       @uploadFile="handleUploadFile"
       @openProfileSettings="handleOpenProfileSettings"
+      @exportSnapshot="handleExportSnapshot"
+      @import="handleImportSnapshot"
       :myProfilePicture="myProfilePicture"
       :userName="myName"
     />

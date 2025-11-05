@@ -19,16 +19,27 @@ const SIGNAL_URLS = (import.meta.env.VITE_SIGNAL_URLS || '')
   .filter(Boolean)
 
 const iceServers = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'turn:turn.gongbbu.com:3478', username: 'gongbbu', credential: 'gongbbu' },
-  { urls: 'turns:turn.gongbbu.com:5349', username: 'gongbbu', credential: 'gongbbu' },
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.l.google.com:5349" },
+    { urls: "stun:stun1.l.google.com:3478" },
+    { urls: "stun:stun1.l.google.com:5349" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:5349" },
+    { urls: "stun:stun3.l.google.com:3478" },
+    { urls: "stun:stun3.l.google.com:5349" },
+    { urls: "stun:stun4.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:5349" }
 ]
 
 const yjsInstances = new Map<string, ReturnType<typeof createYjsInstance>>()
 
-const waitForSync = (provider: WebrtcProvider) =>
+const waitForSync = (provider: WebrtcProvider, persistence: IndexeddbPersistence) =>
   new Promise<void>((resolve) => {
     provider.on('synced', (event: { synced: boolean }) => {
+      // const persistenceState = Y.encodeStateAsUpdate(persistence.doc)
+      // const providerState = Y.encodeStateAsUpdate(provider.doc)
+      // Y.applyUpdate(provider.doc, persistenceState)
+      // console.log('[Yjs] provider state applied to persistence')
       if (event.synced) resolve()
     })
     setTimeout(resolve, 1000) // 1초 타임아웃
@@ -77,10 +88,17 @@ async function createYjsInstance(roomId: string) {
       }
     })
 
-    // Lamport 시계 기준으로 정렬 (같으면 타임스탬프, 그것도 같으면 ID)
+    // 하이브리드 정렬: 물리적 시간 우선, 같은 시간대(2분)면 Lamport로 인과관계 보장
     const sortMessages = (msgs: ChatMessage[]) =>
       msgs.sort((a, b) => {
+        const timeDiff = Math.abs(a.ts - b.ts)
+        const TIME_WINDOW = 60000 // 1분 (60,000ms)
+
+        // 1. 시간 차이가 2분 이상이면 물리적 시간 우선
+        if (timeDiff > TIME_WINDOW) return a.ts - b.ts
+        // 2. 2분 이내(동시 발생)면 Lamport로 인과관계 순서 보장
         if (a.lamport !== b.lamport) return a.lamport - b.lamport
+        // 3. 최종 결정자: 물리적 시간 → ID
         if (a.ts !== b.ts) return a.ts - b.ts
         return a.id.localeCompare(b.id)
       })
@@ -162,7 +180,7 @@ async function createYjsInstance(roomId: string) {
   // WebRTC provider 시작 (백그라운드 동기화)
   console.log('[#3] WebRTC Provider 생성 - 백그라운드 동기화 시작')
   const provider = new WebrtcProvider(roomId, doc, {
-    signaling: SIGNAL_URLS,
+    signaling: [SIGNAL_URLS],
     peerOpts: {
       config: {
         iceServers,
@@ -170,11 +188,9 @@ async function createYjsInstance(roomId: string) {
         iceCandidatePoolSize: 10, // ICE 후보 미리 수집
       },
     },
-    maxConns: 20,
-    filterBcConns: true,
   })
 
-  waitForSync(provider)
+  waitForSync(provider, persistence)
 
   _setupProviderListeners(provider)
   _setupBackgroundConnectionMonitor(provider)
@@ -192,6 +208,17 @@ async function createYjsInstance(roomId: string) {
       ts: timestamp,
       lamport,
     })
+  }
+
+  const exportSnapshot = () => {
+    console.log('[Yjs] 스냅샷 내보내기 요청')
+    const snapshot = Y.encodeStateAsUpdate(doc)
+    return snapshot
+  }
+
+  const importSnapshot = (snapshot: Uint8Array) => {
+    console.log('[Yjs] 스냅샷 가져오기 요청')
+    Y.applyUpdate(doc, snapshot)
   }
 
   const attachFileMeta = (fileId: string, meta: FileMeta, authorTrueUuid: string, authorName = authorTrueUuid) => {
@@ -282,6 +309,8 @@ async function createYjsInstance(roomId: string) {
     resetToLatest,
     isViewingLatest,
     forceResync,
+    exportSnapshot,
+    importSnapshot,
   }
 
   return instance
@@ -311,7 +340,7 @@ function _setupKeepalive(provider: WebrtcProvider) {
       provider.awareness.setLocalStateField('keepalive', Date.now())
 
       // 디버깅용 로그 (필요시 주석 해제)
-      // console.log('[Yjs] Keepalive 전송')
+      console.log('[Yjs] Keepalive 전송')
     }
   }, KEEPALIVE_INTERVAL)
 
