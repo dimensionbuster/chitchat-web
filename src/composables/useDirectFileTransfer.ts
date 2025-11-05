@@ -12,7 +12,7 @@ import { useFileTransferState } from './useFileTransferState'
 
 const { saveChunksBatch } = useFileTransferState()
 
-const CHUNK_SIZE = 256 * 1024 // 256KB
+const CHUNK_SIZE = 128 * 1024 // 128KB
 const MAX_BUFFER_SIZE = 8 * 1024 * 1024 // 8MB
 const FLOW_CONTROL_WINDOW = 100 // 100개 청크마다 ACK 대기 (25.6MB)
 const DB_SAVE_CHUNK_INTERVAL = 200 // 200개 청크마다 DB 저장 (50MB)
