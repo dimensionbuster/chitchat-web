@@ -33,13 +33,9 @@ const iceServers = [
 
 const yjsInstances = new Map<string, ReturnType<typeof createYjsInstance>>()
 
-const waitForSync = (provider: WebrtcProvider, persistence: IndexeddbPersistence) =>
+const waitForSync = (provider: WebrtcProvider) =>
   new Promise<void>((resolve) => {
     provider.on('synced', (event: { synced: boolean }) => {
-      // const persistenceState = Y.encodeStateAsUpdate(persistence.doc)
-      // const providerState = Y.encodeStateAsUpdate(provider.doc)
-      // Y.applyUpdate(provider.doc, persistenceState)
-      // console.log('[Yjs] provider state applied to persistence')
       if (event.synced) resolve()
     })
     setTimeout(resolve, 1000) // 1초 타임아웃
@@ -190,7 +186,7 @@ async function createYjsInstance(roomId: string) {
     },
   })
 
-  waitForSync(provider, persistence)
+  waitForSync(provider)
 
   _setupProviderListeners(provider)
   _setupBackgroundConnectionMonitor(provider)
