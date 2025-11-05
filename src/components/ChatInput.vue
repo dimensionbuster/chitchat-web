@@ -21,11 +21,33 @@ const emit = defineEmits<{
 const input = ref('')
 const showSnapshotMenu = ref(false)
 const snapshotMenuRef = ref<HTMLDivElement | null>(null)
+const inputRef = ref<HTMLInputElement | null>(null)
 
 const onSend = () => {
   if (!input.value.trim()) return
   emit('send', input.value)
   input.value = ''
+}
+
+const onPaste = async (e: ClipboardEvent) => {
+  const items = e.clipboardData?.items
+  if (!items) return
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (!item) continue
+
+    // 이미지 타입 체크
+    if (item.type.indexOf('image') !== -1) {
+      e.preventDefault() // 기본 붙여넣기 동작 방지
+
+      const file = item.getAsFile()
+      if (file) {
+        emit('uploadFile', file)
+        return
+      }
+    }
+  }
 }
 
 const onFileChange = (e: Event) => {
@@ -92,10 +114,12 @@ onUnmounted(() => {
         />
       </button>
     <input
+      ref="inputRef"
       v-model="input"
       placeholder="메시지…"
       class="text-input"
       @keydown.enter="onSend"
+      @paste="onPaste"
       :disabled="disabled"
     />
     <button @click="onSend" :disabled="disabled" class="send-button">Send</button>

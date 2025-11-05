@@ -27,6 +27,32 @@ const getAuthor = (m: AnyMessage) => m?.authorName ?? (m as AnyMessage)?.author 
 const isImage = computed(() => {
   return props.fileMeta?.type?.startsWith('image/')
 })
+
+// URL 정규식 (http, https, ftp 등)
+const urlRegex = /(https?:\/\/[^\s]+)|(ftp:\/\/[^\s]+)/g
+
+// 텍스트에서 URL을 찾아서 HTML로 변환
+const formatMessageWithLinks = (text: string) => {
+  if (!text) return ''
+  return text.replace(urlRegex, (url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="message-link">${url}</a>`
+  })
+}
+
+// 링크 클릭 핸들러 (Electron에서 외부 브라우저로 열기)
+const handleLinkClick = (event: MouseEvent) => {
+  const target = event.target as HTMLElement
+  if (target.tagName === 'A') {
+    event.preventDefault()
+    const href = target.getAttribute('href')
+    if (href && window.electronApi?.openExternal) {
+      window.electronApi.openExternal(href)
+    } else if (href) {
+      // 웹 환경에서는 새 탭으로
+      window.open(href, '_blank', 'noopener,noreferrer')
+    }
+  }
+}
 </script>
 
 <template>
@@ -48,7 +74,12 @@ const isImage = computed(() => {
       </div>
 
       <!-- 텍스트 메시지 -->
-      <span v-if="message.text" class="message-text"> {{ message.text }} </span>
+      <span
+        v-if="message.text"
+        class="message-text"
+        v-html="formatMessageWithLinks(message.text)"
+        @click="handleLinkClick"
+      ></span>
 
       <!-- 이미지 메시지 -->
       <ImageMessage
@@ -115,5 +146,6 @@ const isImage = computed(() => {
 .message-text {
   word-wrap: break-word;
   word-break: break-word;
+  user-select: text;
 }
 </style>

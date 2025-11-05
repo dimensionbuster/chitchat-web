@@ -290,9 +290,9 @@ export function useDirectFileTransfer(
           const requiredSpace = 4 + chunk.byteLength // 인덱스(4) + 청크 데이터
           while (channel.bufferedAmount + requiredSpace > MAX_BUFFER_SIZE) {
             await new Promise((resolve) => setTimeout(resolve, 50))
-            if (Date.now() - startTime > 60000) {
-              throw new Error('버퍼 대기 타임아웃')
-            }
+            // if (Date.now() - startTime > 180000) {
+            //   throw new Error('버퍼 대기 타임아웃')
+            // }
           }
 
           // 청크 인덱스 + 데이터 전송 (메타데이터 JSON 제거!)

@@ -81,6 +81,40 @@ const showProfileImageModal = ref(false)
 const viewingProfileUserId = ref<string | null>(null)
 const viewingProfileImageUrl = ref<string | null>(null)
 const downloadingProfileFileId = ref<string | null>(null)
+const isDraggingOver = ref(false)
+
+// 드래그 앤 드롭 핸들러
+const handleDragOver = (e: DragEvent) => {
+  e.preventDefault()
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'copy'
+  }
+  isDraggingOver.value = true
+}
+
+const handleDragLeave = (e: DragEvent) => {
+  e.preventDefault()
+  isDraggingOver.value = false
+}
+
+const handleDrop = async (e: DragEvent) => {
+  e.preventDefault()
+  isDraggingOver.value = false
+
+  if (!yjsReady.value || isUploading.value) {
+    await showAlert('현재 파일을 업로드할 수 없습니다.')
+    return
+  }
+
+  const files = e.dataTransfer?.files
+  if (!files || files.length === 0) return
+
+  // 첫 번째 파일만 업로드
+  const file = files[0]
+  if (file) {
+    await handleUploadFile(file)
+  }
+}
 
 // Handlers
 const handleSend = (message: string) => {
@@ -419,7 +453,20 @@ const handleImportSnapshot = async () => {
 </script>
 
 <template>
-  <div class="chat-room">
+  <div
+    class="chat-room"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+  >
+    <!-- 드래그 앤 드롭 오버레이 -->
+    <div v-if="isDraggingOver" class="drop-overlay">
+      <div class="drop-message">
+        <div class="drop-icon">📎</div>
+        <div class="drop-text">파일을 여기에 놓으세요</div>
+      </div>
+    </div>
+
     <ChatHeader
       :roomId="activeRoomId"
       :userCount="userCount"
@@ -504,6 +551,36 @@ const handleImportSnapshot = async () => {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  position: relative;
+}
+
+.drop-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 120, 212, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  pointer-events: none;
+}
+
+.drop-message {
+  text-align: center;
+  color: white;
+}
+
+.drop-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.drop-text {
+  font-size: 24px;
+  font-weight: bold;
 }
 
 .modal-overlay {

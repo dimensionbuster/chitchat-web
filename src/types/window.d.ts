@@ -15,6 +15,8 @@ export interface ElectronApi {
   showConfirm: (message: string) => Promise<boolean>
   closeDialog: (dialogId: string, result: boolean) => void
   resizeAndShowDialog: (dialogId: string, width: number, height: number) => void
+  // 외부 브라우저에서 링크 열기
+  openExternal: (url: string) => void
 }
 
 declare global {
