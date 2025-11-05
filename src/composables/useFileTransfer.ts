@@ -357,7 +357,7 @@ export function useFileTransfer(
         reject(new Error('청크 타임아웃'))
       }, CHUNK_TIMEOUT)
 
-      const chunks = new Array<string>(response.totalChunks)
+      const chunks = new Array<ArrayBuffer>(response.totalChunks)
 
       const checkAndComplete = async () => {
         // Guard: 전송이 완료되지 않았으면 리턴
@@ -368,11 +368,10 @@ export function useFileTransfer(
           if (!state.receivedChunks.has(i)) {
             const chunk = transferMap.get(`chunk-${i}`)
             if (chunk) {
-              addChunk(state, i, chunk as string)
-              chunks[i] = chunk as string
-              if (state.receivedChunks.size % 10 === 0) {
-                saveDownloadState(state).catch(console.error)
-              }
+              // Yjs에서 온 base64 문자열을 ArrayBuffer로 변환
+              const arrayBuffer = base64ToArrayBuffer(chunk as string)
+              addChunk(state, i, arrayBuffer)
+              chunks[i] = arrayBuffer
             }
           } else if (!chunks[i]) {
             chunks[i] = state.chunks.get(i)!
@@ -382,12 +381,15 @@ export function useFileTransfer(
         // Guard: 모든 청크가 도착하지 않았으면 리턴
         if (!isComplete(state)) return
 
-        // 완료 처리
+        // 완료 처리 (DB에서 삭제)
         clearTimeout(timeout)
         const blob = await completeAndCache(state, fileType)
         await deleteDownloadState(state.fileId)
         resolve(blob)
       }
+
+      let pendingSaveChunks = 0
+      let isSaving = false
 
       transferMap.observe(() => {
         for (let i = 0; i < response.totalChunks; i++) {
@@ -395,15 +397,26 @@ export function useFileTransfer(
 
           const chunk = transferMap.get(`chunk-${i}`)
           if (chunk) {
-            addChunk(state, i, chunk as string)
-            chunks[i] = chunk as string
+            // Yjs에서 온 base64 문자열을 ArrayBuffer로 변환
+            const arrayBuffer = base64ToArrayBuffer(chunk as string)
+            addChunk(state, i, arrayBuffer)
+            chunks[i] = arrayBuffer
 
             // UI 업데이트 최적화: 10청크마다만 UI 업데이트 (작은 파일이므로 더 자주)
             const shouldUpdate = state.receivedChunks.size % 10 === 0
             updateProgress(state.fileId, state.receivedChunks.size, shouldUpdate)
 
-            if (state.receivedChunks.size % 10 === 0) {
-              saveDownloadState(state).catch(console.error)
+            // 청크 기반 저장 (Yjs는 작은 파일이므로 50개마다)
+            pendingSaveChunks++
+            if (pendingSaveChunks >= 50 && !isSaving) {
+              isSaving = true
+              pendingSaveChunks = 0
+              saveDownloadState(state).then(() => {
+                isSaving = false
+              }).catch((err) => {
+                isSaving = false
+                console.error('[FileTransfer] DB 저장 실패:', err)
+              })
             }
           }
         }
@@ -416,8 +429,7 @@ export function useFileTransfer(
 
   async function completeAndCache(state: PartialDownloadState, fileType?: string): Promise<Blob> {
     const { mergeChunks } = useFileTransferState()
-    const fullData = mergeChunks(state)
-    const arrayBuffer = base64ToArrayBuffer(fullData)
+    const arrayBuffer = mergeChunks(state)
     const blob = new Blob([arrayBuffer], { type: fileType || 'application/octet-stream' })
 
     await cacheFile(state.fileId, blob)

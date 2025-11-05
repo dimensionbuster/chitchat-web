@@ -28,7 +28,7 @@ export type PartialDownloadState = {
   chunkSize: number
   totalBytes: number
   receivedChunks: Set<number> // 수신 완료된 청크 인덱스들
-  chunks: Map<number, string> // 청크 인덱스 → base64 데이터
+  chunks: Map<number, ArrayBuffer> // 청크 인덱스 → ArrayBuffer (base64 사용 안함!)
   timestamp: number // 마지막 업데이트 시각
   transferKey: string // transfer-{fileId}-{timestamp}
 }
