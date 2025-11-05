@@ -378,7 +378,8 @@ const handleExportSnapshot = async () => {
     const url = URL.createObjectURL(snapshotBlob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `chatroom_${activeRoomId}_snapshot.yjs`
+    //date as YYYYMMDDHHMMSS
+    a.download = `chatroom_${activeRoomId}_${new Date().toISOString().slice(0, 19).replace(/[-T:]/g, '')}_snapshot.chitchat`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -392,7 +393,7 @@ const handleImportSnapshot = async () => {
   try {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = '.yjs'
+    input.accept = '.chitchat'
     input.onchange = async () => {
       if (input.files && input.files.length > 0) {
         const file = input.files[0]
