@@ -242,19 +242,20 @@ export function useDirectFileTransfer(
             continue
           }
 
-          // Flow control: FLOW_CONTROL_WINDOW개 청크마다 ACK 대기 (더 유연하게)
+          // Flow control: FLOW_CONTROL_WINDOW개 청크마다 ACK 대기
           if (i > 0 && i % FLOW_CONTROL_WINDOW === 0) {
-            const expectedAckIndex = i - FLOW_CONTROL_WINDOW
+            // 안전 여유: 현재 전송하려는 청크보다 50개 뒤처져도 OK
+            const minRequiredAck = i - FLOW_CONTROL_WINDOW - 50
             let waitTime = 0
 
-            // ACK가 충분히 따라오지 않으면 대기 (여유 50개 청크)
-            while (lastAckedIndex < expectedAckIndex - 50) {
+            // ACK가 충분히 따라오지 않으면 대기
+            while (lastAckedIndex < minRequiredAck) {
               await new Promise((resolve) => setTimeout(resolve, 50))
               waitTime += 50
 
               // ACK 타임아웃 (계속 진행)
               if (waitTime >= ACK_TIMEOUT) {
-                console.warn(`[#16] ACK 대기 타임아웃 - 계속 전송 (lastAck: ${lastAckedIndex}, expected: ${expectedAckIndex}, current: ${i})`)
+                console.warn(`[#16] ACK 대기 타임아웃 - 계속 전송 (lastAck: ${lastAckedIndex}, minRequired: ${minRequiredAck}, current: ${i})`)
                 break
               }
 
@@ -264,8 +265,8 @@ export function useDirectFileTransfer(
               }
             }
 
-            if (lastAckedIndex >= expectedAckIndex - 50) {
-              console.log(`[#16] Flow control OK: lastAck=${lastAckedIndex}, current=${i}`)
+            if (lastAckedIndex >= minRequiredAck) {
+              console.log(`[#16] Flow control OK: lastAck=${lastAckedIndex}, minRequired=${minRequiredAck}, current=${i}`)
             }
           }
 
@@ -468,22 +469,6 @@ export function useDirectFileTransfer(
         let pendingSaveChunks = 0 // 저장되지 않은 청크 수
         const pendingChunksBuffer = new Map<number, ArrayBuffer>() // 배치 저장용 버퍼
         let isSaving = false // DB 저장 중 플래그
-        let lastChunkTime = Date.now() // 마지막 청크 수신 시간
-
-        // 타임아웃 검사 (60초간 청크를 받지 못하면 타임아웃)
-        const timeout = setInterval(() => {
-          const elapsed = Date.now() - lastChunkTime
-          if (elapsed > 60000) {
-            clearInterval(timeout)
-            // 타임아웃 시 진행 상태 저장
-            Promise.all([
-              pendingChunksBuffer.size > 0 ? saveChunksBatch(offer.fileId, pendingChunksBuffer) : Promise.resolve(),
-              saveDownloadState(partialState!)
-            ]).finally(() => {
-              reject(new Error(`수신 타임아웃 (${elapsed / 1000}초간 데이터 없음)`))
-            })
-          }
-        }, 10000) // 10초마다 검사
 
         // 기존에 받은 청크 복원
         if (partialState) {
@@ -504,8 +489,6 @@ export function useDirectFileTransfer(
                 break
 
               case 'complete': {
-                clearInterval(timeout)
-
                 // 모든 청크가 도착했는지 확인
                 if (!isDownloadComplete(partialState!)) {
                   await saveDownloadState(partialState!)
@@ -537,7 +520,6 @@ export function useDirectFileTransfer(
               }
 
               case 'error':
-                clearInterval(timeout)
                 // 에러 시 최종 저장 (이어받기 가능하도록)
                 if (pendingChunksBuffer.size > 0) {
                   await saveChunksBatch(offer.fileId, pendingChunksBuffer)
@@ -571,9 +553,6 @@ export function useDirectFileTransfer(
                 return
               }
 
-              // 청크 수신 시간 갱신 (타임아웃 방지)
-              lastChunkTime = Date.now()
-
               // 청크 저장 (메모리에만, DB 저장은 배치로)
               chunks[currentIndex] = buffer
               partialState!.receivedChunks.add(currentIndex)
@@ -586,9 +565,19 @@ export function useDirectFileTransfer(
 
               // Flow control: FLOW_CONTROL_WINDOW개 청크마다 ACK 전송 (비동기로 처리하여 블로킹 방지)
               if (partialState!.receivedChunks.size % FLOW_CONTROL_WINDOW === 0) {
+                // 연속으로 받은 최대 인덱스 계산 (순서 보장을 위해)
+                let consecutiveIndex = -1
+                for (let idx = 0; idx < offer.totalChunks; idx++) {
+                  if (partialState!.receivedChunks.has(idx)) {
+                    consecutiveIndex = idx
+                  } else {
+                    break // 첫 번째 빠진 청크에서 중단
+                  }
+                }
+
                 const ackMsg: AckMessage = {
                   type: 'ack',
-                  upToIndex: currentIndex
+                  upToIndex: consecutiveIndex
                 }
 
                 // ACK 전송을 비동기로 처리하여 수신 블로킹 방지
@@ -596,7 +585,7 @@ export function useDirectFileTransfer(
                   if (channel.readyState === 'open') {
                     try {
                       channel.send(JSON.stringify(ackMsg))
-                      console.log(`[#20] ACK 전송: ${currentIndex}`)
+                      console.log(`[#20] ACK 전송: ${consecutiveIndex} (받은 청크: ${partialState!.receivedChunks.size})`)
                     } catch (error) {
                       console.warn(`[#20] ACK 전송 실패:`, error)
                     }
@@ -648,7 +637,6 @@ export function useDirectFileTransfer(
         }
 
         channel.onerror = async (error) => {
-          clearInterval(timeout)
           // 에러 시 최종 저장 (이어받기 가능하도록)
           if (pendingChunksBuffer.size > 0) {
             await saveChunksBatch(offer.fileId, pendingChunksBuffer)
@@ -660,7 +648,6 @@ export function useDirectFileTransfer(
 
         channel.onclose = async () => {
           if (!isDownloadComplete(partialState!)) {
-            clearInterval(timeout)
             // 채널 종료 시 최종 저장 (이어받기 가능하도록)
             if (pendingChunksBuffer.size > 0) {
               await saveChunksBatch(offer.fileId, pendingChunksBuffer)
