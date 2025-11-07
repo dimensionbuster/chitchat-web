@@ -7,6 +7,7 @@ import FileMessage from './FileMessage.vue'
 import ProfileAvatar from './ProfileAvatar.vue'
 
 const props = defineProps<{
+  prevMessage?: ChatMessage
   message: ChatMessage
   fileMeta: FileMeta | undefined
   imageUrl: string | undefined
@@ -53,20 +54,31 @@ const handleLinkClick = (event: MouseEvent) => {
     }
   }
 }
+const showOnlyMessage = computed(() => {
+  const prev = props.prevMessage
+  const curr = props.message
+  return (
+    prev &&
+    prev.authorTrueUuid === curr.authorTrueUuid &&
+    curr.ts - prev.ts < 3 * 60 * 1000 // 3분 이내
+  )
+})
 </script>
 
 <template>
   <li class="chat-message">
     <ProfileAvatar
+      v-if="!showOnlyMessage"
       :imageUrl="profilePicture || null"
       :userName="getAuthor(message)"
-      :size="55"
+      :size="45"
       :clickable="true"
       class="message-avatar"
       @click="emit('viewProfile', message.authorTrueUuid)"
     />
+    <div v-else style="width: 45px; flex-shrink: 0;"></div>
     <div class="message-content">
-      <div class="message-header">
+      <div class="message-header" v-if="!showOnlyMessage">
         <strong class="author">{{ getAuthor(message) }}</strong>
         <span class="timestamp">
           {{ new Date(message.ts).toLocaleTimeString() }}
@@ -110,7 +122,7 @@ const handleLinkClick = (event: MouseEvent) => {
   gap: 8px;
   align-items: flex-start;
   font-size: 14px;
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
 .message-avatar {
@@ -124,11 +136,14 @@ const handleLinkClick = (event: MouseEvent) => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  justify-content: space-between;
+  height: 100%;
 }
 
 .message-header {
   display: flex;
   align-items: baseline;
+  padding-top: 5px;
   gap: 8px;
 }
 

@@ -92,8 +92,9 @@ defineExpose({ scrollToBottom })
       <li v-if="isLoading" class="loading-message">이전 메시지 로드 중...</li>
       <li v-if="!isReady" class="status-message">Yjs 네트워크 연결 중…</li>
       <ChatMessage
-        v-for="m in messages"
+        v-for="m, index in messages"
         :key="m.id"
+        :prev-message="messages[index - 1]"
         :message="m"
         :fileMeta="m.fileId ? files.get(m.fileId) : undefined"
         :imageUrl="m.fileId ? imageUrls.get(m.fileId) : undefined"
