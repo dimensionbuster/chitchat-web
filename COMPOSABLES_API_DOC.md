@@ -6,21 +6,23 @@
 
 ## 목차
 1. [fileConstants](#1-fileconstants)
-2. [useYjs](#2-useyjs)
-3. [useFileEncoder](#3-usefileencoder)
-4. [useStorageFileCache](#4-usestoragefilecache)
-5. [useFileTransferState](#5-usefiletransferstate)
-6. [useFileTransferProgress](#6-usefiletransferprogress)
-7. [useGlobalDataChannelQueue](#7-useglobaldatachannelqueue)
-8. [useWebrtcConnection](#8-usewebrtcconnection)
-9. [useDirectFileTransfer](#9-usedirectfiletransfer)
-10. [useFileTransfer](#10-usefiletransfer)
-11. [useFileActions](#11-usefileactions)
-12. [useImageAutoLoader](#12-useimageautoloader)
-13. [useNotification](#13-usenotification)
-14. [useStorageChatroomSettings](#14-usestoragechatroomsettings)
-15. [useProfilePicture](#15-useprofilepicture)
-16. [useStorageProfilePicture](#16-usestorageprofilepicture)
+2. [useConnectedUsers](#2-useconnectedusers)
+3. [useCustomDialog](#3-usecustomdialog)
+4. [useYjs](#4-useyjs)
+5. [useFileEncoder](#5-usefileencoder)
+6. [useStorageFileCache](#6-usestoragefilecache)
+7. [useFileTransferState](#7-usefiletransferstate)
+8. [useFileTransferProgress](#8-usefiletransferprogress)
+9. [useGlobalDataChannelQueue](#9-useGlobalDataChannelQueue)
+10. [useWebrtcConnection](#10-usewebrtcconnection)
+11. [useDirectFileTransfer](#11-usedirectfiletransfer)
+12. [useFileTransfer](#12-usefiletransfer)
+13. [useFileActions](#13-usefileactions)
+14. [useImageAutoLoader](#14-useimageautoloader)
+15. [useNotification](#15-usenotification)
+16. [useStorageChatroomSettings](#16-usestoragechatroomsettings)
+17. [useProfilePicture](#17-useprofilepicture)
+18. [useStorageProfilePicture](#18-usestorageprofilepicture)
 
 ---
 
@@ -38,13 +40,173 @@
   - **256KB 미만**: Yjs 메타데이터에 Base64로 직접 포함 + 자동 다운로드
   - **256KB 이상**: 메타데이터만 저장하고 P2P로 별도 전송
 
+### 프로필 사진 관련 상수
+
+#### `PROFILE_PICTURE_MAX_SIZE`
+- **타입**: `number` (300px)
+- **설명**: 프로필 사진의 최대 크기 (긴 쪽 기준)
+
+#### `PROFILE_PICTURE_QUALITY`
+- **타입**: `number` (0.8)
+- **설명**: 프로필 사진 압축 품질 (0.0 ~ 1.0)
+
+#### `PROFILE_PICTURE_MAX_BYTES`
+- **타입**: `number` (80KB)
+- **설명**: 프로필 사진 최대 파일 크기 (WebRTC DataChannel에서 즉시 전송 가능한 크기)
+
 ### 사용 시점
 - 파일 업로드 시 전송 방식을 결정할 때
 - 이미지 자동 다운로드 여부를 판단할 때
+- 프로필 사진 리사이징 시
 
 ---
 
-## 2. useYjs
+## 2. useConnectedUsers
+
+### 개요
+**채팅방에 접속한 사용자 목록을 실시간으로 추적**하는 composable입니다. Y-webrtc awareness 상태를 모니터링하여 접속자 정보를 업데이트합니다.
+
+### 초기화
+
+```typescript
+const { connectedUsers, userCount, updateConnectedUsers } = useConnectedUsers(provider, currentUserUuid)
+```
+
+### 반환값
+
+#### `connectedUsers`
+- **타입**: `ref<ConnectedUser[]>`
+- **설명**: 현재 접속한 사용자 목록
+- **ConnectedUser 구조**:
+  ```typescript
+  {
+    clientId: number    // Y-webrtc 클라이언트 ID
+    userUuid: string    // 사용자 고유 UUID
+    nickname: string    // 표시 이름 (없으면 UUID 마지막 8자리)
+  }
+  ```
+
+#### `userCount`
+- **타입**: `ref<number>`
+- **설명**: 현재 접속자 수
+
+#### `updateConnectedUsers()`
+- **용도**: 접속자 목록 수동 업데이트
+- **시점**: 필요시 직접 호출
+
+### 사용 예시
+
+```vue
+<template>
+  <div class="user-list">
+    <h3>접속자 ({{ userCount }}명)</h3>
+    <div v-for="user in connectedUsers" :key="user.clientId">
+      {{ user.nickname }}
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { useConnectedUsers } from '@/composables/useConnectedUsers'
+
+const { connectedUsers, userCount } = useConnectedUsers(provider, myUuid)
+</script>
+```
+
+### 특징
+- **자동 업데이트**: awareness 변경 시 자동으로 목록 갱신
+- **실시간**: 피어 연결/해제 시 즉시 반영
+- **자체 제외**: currentUserUuid는 목록에서 제외
+
+---
+
+## 3. useCustomDialog
+
+### 개요
+**플랫폼별 다이얼로그 표시**를 관리합니다. Electron 환경에서는 커스텀 창, 웹 환경에서는 브라우저 기본 다이얼로그를 사용합니다.
+
+### 초기화
+
+```typescript
+const { isOpen, dialogMessage, dialogType, showDialog, confirm, cancel } = useCustomDialog()
+```
+
+### 반환값
+
+#### `isOpen`
+- **타입**: `ref<boolean>`
+- **설명**: 다이얼로그 표시 상태
+
+#### `dialogMessage`
+- **타입**: `ref<string>`
+- **설명**: 표시할 메시지
+
+#### `dialogType`
+- **타입**: `'alert' | 'confirm'`
+- **설명**: 다이얼로그 타입
+
+#### `showDialog(options: DialogOptions): Promise<boolean>`
+- **용도**: 다이얼로그 표시 및 사용자 응답 대기
+- **반환값**: `true`(확인) 또는 `false`(취소)
+- **예시**:
+  ```typescript
+  const confirmed = await showDialog({
+    message: '정말 삭제하시겠습니까?',
+    type: 'confirm'
+  })
+  ```
+
+#### `confirm()`
+- **용도**: 확인 버튼 클릭 처리
+
+#### `cancel()`
+- **용도**: 취소 버튼 클릭 처리
+
+### 헬퍼 함수
+
+#### `showAlert(message: string): Promise<void>`
+- **용도**: 경고창 표시 (확인만 가능)
+- **플랫폼별 동작**:
+  - **Electron**: 새 창으로 표시
+  - **Web**: `alert()` 사용
+
+#### `showConfirm(message: string): Promise<boolean>`
+- **용도**: 확인창 표시 (확인/취소 선택)
+- **플랫폼별 동작**:
+  - **Electron**: 새 창으로 표시
+  - **Web**: `confirm()` 사용
+
+### 사용 예시
+
+```vue
+<template>
+  <!-- 커스텀 다이얼로그 (웹 환경용) -->
+  <div v-if="isOpen" class="dialog-overlay">
+    <div class="dialog">
+      <p>{{ dialogMessage }}</p>
+      <div class="buttons">
+        <button v-if="dialogType === 'confirm'" @click="cancel">취소</button>
+        <button @click="confirm">확인</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { useCustomDialog, showAlert } from '@/composables/useCustomDialog'
+
+const { isOpen, dialogMessage, dialogType, confirm, cancel } = useCustomDialog()
+
+// 사용 예시
+async function deleteItem() {
+  const confirmed = await showAlert('항목이 삭제되었습니다.')
+}
+</script>
+```
+
+---
+
+## 4. useYjs
 
 ### 개요
 **Yjs를 사용한 P2P 실시간 동기화**를 관리합니다. 채팅 메시지, 파일 메타데이터, 실시간 파일 전송을 모두 처리하는 **핵심 composable**입니다.
@@ -53,18 +215,31 @@
 
 ```typescript
 const {
-  messagesRef,      // 표시할 메시지 (ref)
-  files,            // 파일 메타데이터 (Y.Map)
-  sendTextMessage,
-  attachFileMeta,
-  requestFile,
-  respondFile,
-  loadMoreMessages,
-  resetToLatest,
-  isViewingLatest,
-  forceResync
-} = await useYjs('room-123', 'my-user-uuid')
+  messagesRef,        // 표시할 메시지 (ref)
+  files,             // 파일 메타데이터 맵
+  sendTextMessage,   // 텍스트 메시지 전송
+  attachFileMeta,    // 파일 메타데이터 첨부
+  requestFile,       // 파일 요청
+  respondFile,       // 파일 응답
+  getTransferMap,    // 전송용 Y.Map 생성
+  loadMoreMessages,  // 이전 메시지 로드
+  resetToLatest,     // 최신 메시지로 리셋
+  isViewingLatest,   // 최신 메시지 표시 여부
+  forceResync,       // 강제 재동기화
+  exportSnapshot,    // 데이터 내보내기
+  importSnapshot     // 데이터 가져오기
+} = await useYjs('room-123', 'my-user-uuid', 'nickname')
 ```
+
+### 반환값
+
+#### `messagesRef`
+- **타입**: `readonly<ref<ChatMessage[]>>`
+- **설명**: 표시할 메시지 배열 (최근 N개만)
+
+#### `files`
+- **타입**: `Y.Map<FileMeta>`
+- **설명**: 파일 메타데이터 저장소
 
 ### 함수
 
@@ -145,6 +320,14 @@ if (!isViewingLatest()) {
 - **시점**: 동기화 오류 발생 시 또는 관리자가 강제 초기화할 때
 - **주의**: 로컬 데이터를 모두 지우므로 신중하게 사용
 
+#### `exportSnapshot(): Uint8Array`
+- **용도**: 현재 Yjs 문서 상태를 바이너리 스냅샷으로 내보내기
+- **시점**: 데이터 백업 시
+
+#### `importSnapshot(snapshot: Uint8Array)`
+- **용도**: 바이너리 스냅샷에서 Yjs 문서 상태 복원
+- **시점**: 데이터 복원 시
+
 ### 사용 예시 (채팅방 컴포넌트)
 
 ```typescript
@@ -162,14 +345,19 @@ function sendMessage(text: string) {
 // 파일 업로드
 async function uploadFile(file: File) {
   const { fileId, meta } = await prepareFile(file)
-  await cacheFile(fileId, file)
-  yjs.attachFileMeta(fileId, meta, myUuid, myName)
+  attachFileMeta(fileId, meta, myUuid, myName)
 }
 ```
 
+### 특징
+- **Lamport 시계**: 메시지 순서 보장을 위한 논리적 시계
+- **자동 마이그레이션**: 기존 Y.Array 데이터를 Y.Map으로 변환
+- **백그라운드 모니터링**: 연결 상태 자동 모니터링 및 재연결
+- **Keepalive**: 연결 유지 메커니즘
+
 ---
 
-## 3. useFileEncoder
+## 5. useFileEncoder
 
 ### 개요
 **파일과 Base64 간 변환**을 처리합니다. 작은 파일을 Yjs 메타데이터에 포함시키거나 추출할 때 사용합니다.
@@ -185,9 +373,6 @@ async function uploadFile(file: File) {
 ```typescript
 async function handleFileSelect(file: File) {
   const { fileId, meta } = await prepareFile(file)
-  console.log(meta) // { name, size, type, fileData?: string }
-  
-  // Yjs에 등록
   attachFileMeta(fileId, meta, myUuid, myName)
 }
 ```
@@ -202,7 +387,6 @@ async function handleFileSelect(file: File) {
 const meta = files.get(fileId)
 if (meta?.fileData) {
   const blob = await getFileBlob(fileId, meta)
-  const url = URL.createObjectURL(blob)
   imgElement.src = url
 }
 ```
@@ -232,7 +416,7 @@ if (meta.fileData) {
 
 ---
 
-## 4. useStorageFileCache
+## 6. useStorageFileCache
 
 ### 개요
 **IndexedDB를 사용한 파일 캐시 관리**입니다. 한 번 다운로드한 파일을 로컬에 저장하여 재다운로드를 방지합니다.
@@ -277,18 +461,16 @@ if (await hasCachedFile(fileId)) {
 // 다운로드 전 캐시 확인
 async function downloadFile(fileId: string) {
   const cached = await getCachedFile(fileId)
-  if (cached) return cached
-  
-  // 캐시 없으면 P2P 다운로드
-  const blob = await requestFileP2P(fileId)
-  await cacheFile(fileId, blob)
-  return blob
+  if (cached) {
+    return cached
+  }
+  // P2P 다운로드 시작
 }
 ```
 
 ---
 
-## 5. useFileTransferState
+## 7. useFileTransferState
 
 ### 개요
 **이어받기(Resume) 기능**을 지원하기 위한 다운로드 상태 관리입니다. 연결이 끊겨도 진행 상황을 IndexedDB에 저장하여 나중에 재개할 수 있습니다.
@@ -304,9 +486,12 @@ const state = {
   fileId: 'file-123',
   fileName: 'document.pdf',
   totalChunks: 100,
-  receivedChunks: new Set([0, 1, 2, 5]),
-  chunks: new Map([[0, 'base64...'], [1, 'base64...']]),
-  // ...
+  chunkSize: 65536,
+  totalBytes: 5242880,
+  receivedChunks: new Set([0, 1, 2]),
+  chunks: new Map(),
+  timestamp: Date.now(),
+  transferKey: 'transfer-file-123-1234567890'
 }
 await saveDownloadState(state)
 ```
@@ -331,21 +516,17 @@ if (partialState) {
 - **용도**: 중단된 모든 다운로드 조회
 - **시점**: 앱 시작 시 또는 "중단된 다운로드" 목록 표시 시
 
-#### `cleanupOldStates(): Promise<void>`
-- **용도**: 24시간 이상 된 다운로드 상태 자동 삭제
-- **시점**: 앱 시작 시 자동 호출됨
-
 #### `hasChunk(state: PartialDownloadState, chunkIndex: number): boolean`
 - **용도**: 특정 청크를 이미 받았는지 확인
 
-#### `addChunk(state: PartialDownloadState, chunkIndex: number, chunkData: string)`
-- **용도**: 청크를 상태에 추가
+#### `addChunk(state: PartialDownloadState, chunkIndex: number, chunkData: ArrayBuffer)`
+- **용도**: 청크를 상태에 추가 (메모리 + DB에 저장)
 
 #### `isComplete(state: PartialDownloadState): boolean`
 - **용도**: 모든 청크를 받았는지 확인
 
-#### `mergeChunks(state: PartialDownloadState): string`
-- **용도**: 모든 청크를 순서대로 결합하여 하나의 Base64 문자열 생성
+#### `mergeChunks(state: PartialDownloadState): ArrayBuffer`
+- **용도**: 모든 청크를 순서대로 결합하여 하나의 ArrayBuffer 생성
 - **시점**: 다운로드 완료 후 Blob 생성 전
 
 #### `getProgress(state: PartialDownloadState): number`
@@ -358,7 +539,6 @@ if (partialState) {
 const partialState = await loadDownloadState(fileId)
 if (partialState) {
   console.log('이어받기 가능!')
-  // 이미 받은 청크 건너뛰고 나머지만 요청
   requestFile(fileId, myUuid, Array.from(partialState.receivedChunks))
 }
 
@@ -376,7 +556,7 @@ if (isComplete(state)) {
 
 ---
 
-## 6. useFileTransferProgress
+## 8. useFileTransferProgress
 
 ### 개요
 **파일 전송 진행 상황을 UI에 표시**하기 위한 전역 상태 관리입니다. 업로드/다운로드 진행률을 실시간으로 추적합니다.
@@ -386,7 +566,7 @@ if (isComplete(state)) {
 ```typescript
 const {
   transfers,        // Record<fileId, FileTransferProgress>
-  uploadQueueInfo,  // { activeCount, queuedCount, maxConcurrent }
+  uploadQueueInfo,  // 업로드 큐 정보
   startTransfer,
   updateProgress,
   completeTransfer,
@@ -395,7 +575,7 @@ const {
   getProgress,
   getProgressPercent,
   isTransferring,
-  updateUploadQueue
+  updateUploadQueue,
 }
 ```
 
@@ -412,9 +592,10 @@ const {
 startTransfer('file-123', 'document.pdf', 'download', 100, 5242880)
 ```
 
-#### `updateProgress(fileId: string, receivedChunks: number)`
+#### `updateProgress(fileId: string, receivedChunks: number, forceUpdate?: boolean)`
 - **용도**: 전송된 청크 수 업데이트
 - **시점**: 청크를 받거나 보낼 때마다
+- **쓰로틀링**: UI 업데이트는 300ms마다 제한 (렉 방지)
 - **예시**:
 ```typescript
 updateProgress('file-123', 45) // 45/100 청크 완료
@@ -423,6 +604,10 @@ updateProgress('file-123', 45) // 45/100 청크 완료
 #### `completeTransfer(fileId: string)`
 - **용도**: 전송 완료 표시 (5초 후 자동 제거)
 - **시점**: 모든 청크 전송 완료 시
+
+#### `failTransfer(fileId: string)`
+- **용도**: 전송 실패 표시 및 제거
+- **시점**: 전송 실패 시
 
 #### `cancelTransfer(fileId: string)`
 - **용도**: 전송 취소 및 상태 제거
@@ -442,15 +627,20 @@ const percent = getProgressPercent('file-123') // 45.0
 #### `isTransferring(fileId: string): boolean`
 - **용도**: 현재 전송 중인지 확인
 
+#### `updateUploadQueue(activeCount: number, queuedCount: number, maxConcurrent?: number)`
+- **용도**: 업로드 큐 상태 업데이트
+- **시점**: 큐 상태 변경 시
+
 ### 사용 예시 (Vue 컴포넌트)
 
 ```vue
 <template>
   <div v-for="[fileId, progress] in Object.entries(transfers)" :key="fileId">
-    <div>{{ progress.fileName }}</div>
-    <div>{{ progress.type === 'upload' ? '업로드' : '다운로드' }}</div>
-    <progress :value="getProgressPercent(fileId)" max="100"></progress>
-    <button @click="cancelTransfer(fileId)">취소</button>
+    <div class="transfer-item">
+      <span>{{ progress.fileName }}</span>
+      <progress :value="getProgressPercent(fileId)" max="100"></progress>
+      <button v-if="!progress.isComplete" @click="cancelTransfer(fileId)">취소</button>
+    </div>
   </div>
 </template>
 
@@ -461,7 +651,7 @@ const { transfers, getProgressPercent, cancelTransfer } = useFileTransferProgres
 
 ---
 
-## 7. useGlobalDataChannelQueue
+## 9. useGlobalDataChannelQueue
 
 ### 개요
 **모든 데이터 전송을 우선순위 큐로 관리**하는 싱글톤 매니저입니다. 동시 전송 수를 제한하고 중요한 파일을 먼저 보내도록 스케줄링합니다.
@@ -470,13 +660,14 @@ const { transfers, getProgressPercent, cancelTransfer } = useFileTransferProgres
 
 ```typescript
 const {
-  enqueue,
-  cancelJob,
-  setProvider,
-  registerDataChannel,
-  unregisterDataChannel,
-  stats,      // reactive 통계
-  queueState  // reactive 큐 상태
+  enqueue,          // 작업 추가
+  cancelJob,        // 작업 취소
+  setProvider,      // WebRTC Provider 등록
+  registerDataChannel, // 데이터 채널 등록
+  unregisterDataChannel, // 데이터 채널 제거
+  stats,            // 통계 정보 (reactive)
+  queueState,       // 큐 상태 (computed)
+  clear             // 모든 작업 초기화
 } = useGlobalDataChannelQueue()
 ```
 
@@ -511,10 +702,11 @@ const job = createFileTransferJob(
   fileId,
   fileName,
   targetPeerId,
-  fileSize,
+  dataSize,
   DataChannelPriority.NORMAL,
   async (onProgress, checkCancelled) => {
     // 실제 전송 로직
+    await sendFileDirect(fileId, targetPeerId)
   }
 )
 const jobId = enqueue(job)
@@ -524,43 +716,14 @@ const jobId = enqueue(job)
 - **용도**: 큐에 있는 작업 취소 (아직 시작 안 된 것만)
 - **반환값**: `true`면 취소 성공
 
-### 헬퍼 함수
-
-#### `createFileTransferJob(...): DataChannelJob`
-- **용도**: 파일 전송 작업 생성
-- **파라미터**:
-  - `fileId`, `fileName`, `targetPeerId`, `dataSize`
-  - `priority`: `DataChannelPriority.HIGH` 등
-  - `executeFunc`: 실제 전송 함수
-- **예시**:
-```typescript
-const job = createFileTransferJob(
-  'file-123',
-  'image.png',
-  'peer-456',
-  102400, // 100KB
-  DataChannelPriority.HIGH,
-  async (onProgress, checkCancelled) => {
-    // 전송 로직
-    await sendFileDirectInternal(fileId, targetPeerId, fileData, onProgress, checkCancelled)
-  }
-)
-```
-
-#### `createImageTransferJob(...): DataChannelJob`
-- **용도**: 이미지 전송 작업 생성 (우선순위 높음)
-
-#### `createProfilePictureJob(...): DataChannelJob`
-- **용도**: 프로필 사진 전송 작업 생성 (최우선 순위, 취소 불가)
-
 ### 우선순위
 
 ```typescript
 enum DataChannelPriority {
-  CRITICAL = 0,  // 프로필 사진 (즉시 전송)
-  HIGH = 1,      // 채팅 이미지, 100KB 미만 파일
-  NORMAL = 2,    // 일반 파일
-  LOW = 3        // 10MB 초과 대용량 파일
+  CRITICAL = 0,   // 프로필 사진, 작은 이미지 (즉시 전송)
+  HIGH = 1,       // 채팅 이미지
+  NORMAL = 2,     // 일반 파일
+  LOW = 3,        // 대용량 파일
 }
 ```
 
@@ -568,15 +731,15 @@ enum DataChannelPriority {
 
 ```typescript
 {
-  totalJobs: 10,          // 총 작업 수
-  activeJobs: 2,          // 현재 전송 중
-  queuedJobs: 5,          // 대기 중
-  completedJobs: 3,       // 완료
-  failedJobs: 0,          // 실패
-  cancelledJobs: 0,       // 취소
-  totalBytesSent: 5242880,// 전송된 바이트
-  totalBytesQueued: 10485760, // 대기 중 바이트
-  averageSpeed: 1048576   // 평균 속도 (bytes/sec)
+  totalJobs: number,          // 총 작업 수
+  activeJobs: number,         // 활성 작업 수
+  queuedJobs: number,         // 대기 중 작업 수
+  completedJobs: number,      // 완료된 작업 수
+  failedJobs: number,         // 실패한 작업 수
+  cancelledJobs: number,      // 취소된 작업 수
+  totalBytesSent: number,     // 총 전송 바이트 수
+  totalBytesQueued: number,   // 대기 중 바이트 수
+  averageSpeed: number        // 평균 속도 (bytes/sec)
 }
 ```
 
@@ -593,10 +756,11 @@ async function sendFile(fileId: string, targetPeerId: string) {
     fileId,
     'document.pdf',
     targetPeerId,
-    1048576, // 1MB
+    5242880, // 5MB
     DataChannelPriority.NORMAL,
-    async (onProgress, checkCancelled) => {
-      // 전송 로직
+    async () => {
+      // 실제 전송 로직
+      await sendFileDirect(fileId, targetPeerId)
     }
   )
   enqueue(job)
@@ -607,9 +771,16 @@ console.log(`활성: ${stats.activeJobs}, 대기: ${stats.queuedJobs}`)
 console.log(`평균 속도: ${(stats.averageSpeed / 1024).toFixed(0)} KB/s`)
 ```
 
+### 헬퍼 함수
+
+#### `createFileTransferJob(...)`
+#### `createImageTransferJob(...)`
+#### `createProfilePictureJob(...)`
+- **용도**: 각 타입별 작업 생성 헬퍼 함수들
+
 ---
 
-## 8. useWebrtcConnection
+## 10. useWebrtcConnection
 
 ### 개요
 **WebRTC PeerConnection 및 DataChannel을 관리**합니다. Offer/Answer 교환, ICE 후보 수집, 연결 생명주기를 담당합니다.
@@ -620,15 +791,19 @@ console.log(`평균 속도: ${(stats.averageSpeed / 1024).toFixed(0)} KB/s`)
 const {
   createOffer,
   createAnswer,
+  handleIceCandidate,
   cleanup,
+  cleanupAll,
   cancelTransfer,
-  activeChannels
+  activeConnections,
+  activeChannels,
+  getConnectionId,
 } = useWebrtcConnection(provider, myUuid)
 ```
 
 ### 함수
 
-#### `createOffer(fileId, targetUuid, totalChunks, fileSize): Promise<RTCDataChannel>`
+#### `createOffer(fileId, targetUuid, totalChunks, fileSize, receivedChunks?): Promise<RTCDataChannel>`
 - **용도**: Offer를 생성하고 데이터 채널 반환 (발신자)
 - **시점**: 파일 전송을 시작할 때
 - **반환값**: 열린 데이터 채널
@@ -655,9 +830,8 @@ if (offer && offer.targetUuid === myUuid) {
 #### `cleanup(connectionId: string)`
 - **용도**: PeerConnection과 DataChannel 정리
 - **시점**: 파일 전송 완료 또는 실패 시
-- **자동 처리**: 채널이 닫히면 자동 호출됨
 
-#### `cancelTransfer(fileId, peerUuid, reason)`
+#### `cancelTransfer(fileId: string, peerUuid: string, reason: string)`
 - **용도**: 파일 전송 취소 메시지 전송 및 연결 정리
 - **시점**: 사용자가 전송을 취소할 때
 
@@ -668,11 +842,12 @@ if (offer && offer.targetUuid === myUuid) {
 {
   fileId: string
   senderUuid: string
-  targetUuid: string    // 수신자
+  targetUuid: string
   totalChunks: number
   fileSize: number
   sdp: RTCSessionDescriptionInit
   timestamp: number
+  receivedChunks?: number[] // 이어받기 정보
 }
 ```
 
@@ -681,22 +856,38 @@ if (offer && offer.targetUuid === myUuid) {
 {
   fileId: string
   receiverUuid: string
-  targetUuid: string    // 발신자
+  targetUuid: string
   sdp: RTCSessionDescriptionInit
   timestamp: number
 }
 ```
 
-### 사용 예시 (일반적으로 직접 사용 안 함)
+#### `FileTransferIce`
+```typescript
+{
+  fileId: string
+  fromUuid: string
+  toUuid: string
+  candidate: RTCIceCandidateInit
+  timestamp: number
+}
+```
+
+### 사용 예시
 
 ```typescript
-// useDirectFileTransfer가 자동으로 처리하므로
-// 대부분의 경우 직접 사용할 필요 없음
+// 발신자
+const channel = await createOffer(fileId, targetUuid, totalChunks, fileSize)
+// channel.send(data)
+
+// 수신자
+const channel = await createAnswer(offer)
+// channel.onmessage = (event) => { /* 데이터 처리 */ }
 ```
 
 ---
 
-## 9. useDirectFileTransfer
+## 11. useDirectFileTransfer
 
 ### 개요
 **대용량 파일(256KB 이상)을 WebRTC DataChannel로 P2P 직접 전송**합니다. 청크 단위 전송, 이어받기, 버퍼 관리를 자동으로 처리합니다.
@@ -705,8 +896,9 @@ if (offer && offer.targetUuid === myUuid) {
 
 ```typescript
 const {
-  sendFileViaQueue,
-  receiveFileDirect
+  sendFileViaQueue,    // 큐를 통한 전송
+  receiveFileDirect,   // 직접 수신
+  activeTransfers,     // 진행 중 전송 추적
 } = useDirectFileTransfer(provider, myUuid, filesMap)
 ```
 
@@ -715,7 +907,7 @@ const {
 #### `sendFileViaQueue(fileId: string, targetUuid: string): Promise<void>`
 - **용도**: 파일을 글로벌 큐를 통해 전송 (권장)
 - **시점**: 256KB 이상 파일을 보낼 때
-- **자동 처리**: 
+- **자동 처리**:
   - 파일 크기에 따라 우선순위 자동 결정
   - 큐에 등록하여 순차 전송
 - **예시**:
@@ -727,10 +919,10 @@ await sendFileViaQueue('file-123', 'peer-456')
 - **용도**: Offer를 받아 파일 수신
 - **시점**: awareness에서 FileTransferOffer를 감지했을 때
 - **반환값**: 수신한 파일 Blob
-- **자동 처리**: 
+- **자동 처리**:
   - 이어받기 자동 지원
-  - 청크 누락 감지
   - 캐시 저장
+  - 진행 상태 추적
 - **예시**:
 ```typescript
 const offer = awarenessState.fileTransferOffer
@@ -740,12 +932,13 @@ if (offer && offer.targetUuid === myUuid) {
 }
 ```
 
-### 내부 동작 (알아두면 좋은 정보)
+### 내부 동작
 
-1. **청크 크기**: 64KB
+1. **청크 크기**: 128KB
 2. **버퍼 관리**: 8MB 임계값, 버퍼 가득 차면 자동 대기
-3. **이어받기**: IndexedDB에 진행 상태 자동 저장
-4. **완료 메시지**: 모든 청크 전송 후 `{ type: 'complete' }` 전송
+3. **Flow control**: 100청크마다 ACK 대기
+4. **이어받기**: IndexedDB에 진행 상태 자동 저장
+5. **완료 메시지**: 모든 청크 전송 후 `{ type: 'complete' }` 전송
 
 ### 사용 예시
 
@@ -760,7 +953,7 @@ const blob = await receiveFileDirect(offer)
 
 ---
 
-## 10. useFileTransfer
+## 12. useFileTransfer
 
 ### 개요
 **파일 전송의 최상위 오케스트레이터**입니다. 파일 크기에 따라 전송 방식을 자동 선택하고, 업로드 큐를 관리하며, 이어받기를 지원합니다.
@@ -772,19 +965,19 @@ const blob = await receiveFileDirect(offer)
 ```typescript
 const {
   setupFileRequestListener,  // 필수: 앱 시작 시 호출
-  requestFileP2P,
-  registerFileAvailability,
-  getUploadStats,
-  queueStats,
-  queueState,
-  cancelJob
+  requestFileP2P,           // P2P 파일 요청
+  registerFileAvailability, // 파일 소유권 등록
+  getUploadStats,           // 업로드 통계
+  queueStats,               // 글로벌 큐 통계
+  queueState,               // 글로벌 큐 상태
+  cancelJob,                // 작업 취소
 } = useFileTransfer(
   provider,
-  files,          // Y.Map<FileMeta>
+  files,
   myUuid,
-  requestFile,    // useYjs의 함수
-  respondFile,    // useYjs의 함수
-  getTransferMap  // useYjs의 함수
+  requestFile,     // useYjs의 함수
+  respondFile,     // useYjs의 함수
+  getTransferMap   // useYjs의 함수
 )
 ```
 
@@ -795,7 +988,6 @@ const {
 - **시점**: **채팅방 입장 직후 무조건 호출**
 - **역할**:
   - 다른 사용자의 파일 요청을 감지
-  - 자동으로 파일 전송 시작
   - 파일 소유권을 awareness에 브로드캐스트
 - **예시**:
 ```typescript
@@ -809,8 +1001,7 @@ fileTransfer.setupFileRequestListener() // 필수!
 - **시점**: 사용자가 파일을 다운로드하려고 할 때
 - **자동 처리**:
   - 캐시 확인
-  - 파일 크기에 따라 방식 선택 (Yjs 또는 P2P)
-  - 최적의 발신자 선택
+  - 파일 크기에 따른 전송 방식 자동 선택
   - 이어받기 자동 시도
 - **반환값**: 다운로드된 파일 Blob
 - **예시**:
@@ -818,8 +1009,7 @@ fileTransfer.setupFileRequestListener() // 필수!
 async function downloadFile(fileId: string) {
   try {
     const blob = await requestFileP2P(fileId)
-    const meta = files.get(fileId)
-    triggerDownload(blob, meta?.name || fileId)
+    triggerDownload(blob, fileName)
   } catch (error) {
     console.error('다운로드 실패:', error)
   }
@@ -876,34 +1066,27 @@ fileTransfer.setupFileRequestListener() // 필수!
 async function uploadFile(file: File) {
   // 1. 파일 준비 및 캐시
   const { fileId, meta } = await prepareFile(file)
-  
-  // 2. Yjs에 등록
+
+  // 2. 메타데이터 첨부 (채팅에 표시)
   yjs.attachFileMeta(fileId, meta, myUuid, myName)
-  
-  // 3. 소유권 브로드캐스트
-  await fileTransfer.registerFileAvailability(fileId)
-  
+
   console.log('업로드 완료!')
 }
 
 // === 파일 다운로드 ===
 async function downloadFile(fileId: string) {
   try {
-    // 1. P2P 다운로드 (캐시 자동 확인)
     const blob = await fileTransfer.requestFileP2P(fileId)
-    
-    // 2. 브라우저 저장
-    const meta = yjs.files.get(fileId)
-    triggerDownload(blob, meta?.name || fileId)
+    triggerDownload(blob, fileName)
   } catch (error) {
-    alert('다운로드 실패: ' + error.message)
+    console.error('다운로드 실패:', error)
   }
 }
 ```
 
 ---
 
-## 11. useFileActions
+## 13. useFileActions
 
 ### 개요
 **파일 다운로드 및 저장 액션**을 처리합니다. 브라우저의 파일 저장 대화상자를 띄웁니다.
@@ -927,8 +1110,8 @@ const {
 - **시점**: 사용자가 파일 메시지에서 "다운로드" 버튼을 누를 때
 - **자동 처리**:
   1. 캐시 확인
-  2. 없으면 P2P 요청
-  3. 작은 파일이면 메타데이터에서 추출
+  2. 없으면 P2P로 요청
+  3. 메타데이터에서 직접 추출
   4. 브라우저 저장 대화상자 표시
 - **예시**:
 ```typescript
@@ -949,8 +1132,8 @@ triggerDownload(blob, 'document.pdf')
 ```vue
 <template>
   <div v-for="msg in messages" :key="msg.id">
-    <div v-if="msg.fileId">
-      <span>{{ files.get(msg.fileId)?.name }}</span>
+    <div v-if="msg.fileId" class="file-message">
+      <span>{{ msg.fileId }}</span>
       <button @click="downloadFile(msg.fileId)">다운로드</button>
     </div>
   </div>
@@ -963,7 +1146,7 @@ const { downloadFile } = useFileActions(files, requestFileP2P)
 
 ---
 
-## 12. useImageAutoLoader
+## 14. useImageAutoLoader
 
 ### 개요
 **이미지 자동 로드 및 표시**를 관리합니다. 작은 이미지(256KB 이하)를 자동으로 다운로드하고 URL을 생성합니다.
@@ -973,12 +1156,12 @@ const { downloadFile } = useFileActions(files, requestFileP2P)
 ```typescript
 const {
   imageUrls,        // ref: Map<fileId, Object URL>
-  loadingImages,    // ref: Set<fileId>
-  failedDownloads,  // ref: Map<fileId, errorMessage>
+  loadingImages,    // ref: Set<string>
+  failedDownloads,  // ref: Map<string, string>
   isImage,
   shouldAutoDownload,
   downloadImage,
-  processAutoDownload
+  processAutoDownload,
 } = useImageAutoLoader(files, requestFileP2P)
 ```
 
@@ -992,15 +1175,14 @@ const {
 
 #### `downloadImage(fileId: string, forceDownload?: boolean): Promise<void>`
 - **용도**: 이미지 다운로드 및 Object URL 생성
-- **시점**: 
+- **시점**:
   - 자동: `processAutoDownload`에서 호출
   - 수동: 사용자가 "이미지 로드" 버튼을 누를 때
 - **파라미터**:
   - `forceDownload`: `true`면 재시도 (실패한 다운로드)
 - **자동 처리**:
   - 캐시 우선 확인
-  - 메타데이터에서 추출 또는 P2P 요청
-  - `imageUrls`에 Object URL 저장
+  - Object URL 생성 및 `imageUrls`에 저장
 - **예시**:
 ```typescript
 await downloadImage('image-123')
@@ -1010,7 +1192,7 @@ imgElement.src = url
 
 #### `processAutoDownload(messages: ChatMessage[]): Promise<void>`
 - **용도**: 메시지 목록에서 자동 다운로드 대상 이미지 찾아서 다운로드
-- **시점**: 
+- **시점**:
   - 메시지 목록이 업데이트될 때 (watch)
   - 채팅방 입장 시
 - **예시**:
@@ -1026,27 +1208,18 @@ watch(() => messages.value, (newMessages) => {
 <template>
   <div v-for="msg in messages" :key="msg.id">
     <div v-if="msg.fileId && isImage(msg.fileId)">
-      <!-- 자동 로드됨 -->
-      <img v-if="imageUrls.get(msg.fileId)" 
-           :src="imageUrls.get(msg.fileId)" 
-           alt="image" />
-      
-      <!-- 로딩 중 -->
-      <div v-else-if="loadingImages.has(msg.fileId)">
-        로딩 중...
-      </div>
-      
-      <!-- 실패 시 재시도 -->
-      <div v-else-if="failedDownloads.has(msg.fileId)">
-        <span>{{ failedDownloads.get(msg.fileId) }}</span>
-        <button @click="downloadImage(msg.fileId, true)">재시도</button>
-      </div>
-      
-      <!-- 큰 이미지는 수동 다운로드 -->
-      <button v-else-if="!shouldAutoDownload(msg.fileId)"
-              @click="downloadImage(msg.fileId)">
-        이미지 로드 ({{ (files.get(msg.fileId)?.size / 1024).toFixed(0) }}KB)
+      <img
+        v-if="imageUrls[msg.fileId]"
+        :src="imageUrls[msg.fileId]"
+        alt="이미지"
+      />
+      <button
+        v-else-if="!loadingImages.has(msg.fileId)"
+        @click="downloadImage(msg.fileId)"
+      >
+        이미지 로드
       </button>
+      <span v-else>로딩 중...</span>
     </div>
   </div>
 </template>
@@ -1055,9 +1228,7 @@ watch(() => messages.value, (newMessages) => {
 const {
   imageUrls,
   loadingImages,
-  failedDownloads,
   isImage,
-  shouldAutoDownload,
   downloadImage,
   processAutoDownload
 } = useImageAutoLoader(files, requestFileP2P)
@@ -1071,7 +1242,7 @@ watch(() => messages.value, (newMessages) => {
 
 ---
 
-## 13. useNotification
+## 15. useNotification
 
 ### 개요
 **플랫폼별 알림 표시**를 관리합니다. Electron에서는 커스텀 알림창, 웹에서는 브라우저 알림을 사용합니다.
@@ -1080,30 +1251,24 @@ watch(() => messages.value, (newMessages) => {
 
 #### `showNotification(authorName, text, messageId, roomId)`
 - **용도**: 새 메시지 알림 표시
-- **시점**: 
+- **시점**:
   - 새 메시지가 도착했을 때
-  - 앱이 백그라운드에 있을 때
   - 다른 채팅방에 있을 때
 - **파라미터**:
   - `authorName`: 보낸 사람 이름
   - `text`: 메시지 내용
-  - `messageId`: 메시지 ID (클릭 시 스크롤용)
+  - `messageId`: 메시지 ID
   - `roomId`: 채팅방 ID
 - **플랫폼별 동작**:
   - **Electron**: 커스텀 알림창 표시 (`window.electronAPI.createNotification`)
-  - **Web**: 콘솔 로그 (또는 브라우저 Notification API 사용 가능)
+  - **Web**: 콘솔 로그 (브라우저 Notification API 사용 가능)
 - **예시**:
 ```typescript
 // Yjs 메시지 observe
 messagesMap.observe(() => {
   const latestMessage = sortedMessages[sortedMessages.length - 1]
   if (latestMessage.authorTrueUuid !== myUuid) {
-    showNotification(
-      latestMessage.authorName,
-      latestMessage.text || '[파일]',
-      latestMessage.id,
-      roomId
-    )
+    showNotification(latestMessage.authorName, latestMessage.text, latestMessage.id, roomId)
   }
 })
 ```
@@ -1116,14 +1281,9 @@ const { showNotification } = useNotification()
 // 새 메시지 도착 시
 watch(() => messages.value, (newMessages, oldMessages) => {
   if (newMessages.length > oldMessages.length) {
-    const latestMsg = newMessages[newMessages.length - 1]
-    if (latestMsg.authorTrueUuid !== myUuid && !isWindowFocused) {
-      showNotification(
-        latestMsg.authorName,
-        latestMsg.text || '[파일]',
-        latestMsg.id,
-        roomId
-      )
+    const newMsg = newMessages[newMessages.length - 1]
+    if (newMsg.authorTrueUuid !== myUuid) {
+      showNotification(newMsg.authorName, newMsg.text, newMsg.id, roomId)
     }
   }
 })
@@ -1131,7 +1291,7 @@ watch(() => messages.value, (newMessages, oldMessages) => {
 
 ---
 
-## 14. useStorageChatroomSettings
+## 16. useStorageChatroomSettings
 
 ### 개요
 **IndexedDB를 사용한 채팅방 설정 저장/관리**입니다. 채팅방별로 사용자 설정을 저장합니다.
@@ -1145,9 +1305,9 @@ watch(() => messages.value, (newMessages, oldMessages) => {
 ```typescript
 const option = {
   userName: 'Alice',
-  roomName: '팀 채팅방',
-  notifications: true,
-  autoDownload: true
+  roomName: '개발팀',
+  autoDownload: true,
+  theme: 'dark'
 }
 await saveChatroomOption('room-123', option)
 ```
@@ -1192,10 +1352,11 @@ alert('설정 복원 완료!')
 ```vue
 <template>
   <div>
-    <input v-model="userName" @change="saveSettings" />
-    <input v-model="roomName" @change="saveSettings" />
-    <button @click="exportSettings">설정 내보내기</button>
-    <button @click="importSettings">설정 가져오기</button>
+    <input v-model="userName" placeholder="사용자 이름" />
+    <input v-model="roomName" placeholder="채팅방 이름" />
+    <button @click="saveSettings">저장</button>
+    <button @click="exportSettings">내보내기</button>
+    <input type="file" @change="importSettings" accept=".json" />
   </div>
 </template>
 
@@ -1228,18 +1389,20 @@ async function exportSettings() {
 }
 
 // 가져오기
-async function importSettings() {
-  const file = await selectFile()
-  const text = await file.text()
-  await importOptionFromJSON(text)
-  location.reload()
+async function importSettings(event) {
+  const file = event.target.files?.[0]
+  if (file) {
+    const text = await file.text()
+    await importOptionFromJSON(text)
+    location.reload()
+  }
 }
 </script>
 ```
 
 ---
 
-## 15. useProfilePicture
+## 17. useProfilePicture
 
 ### 개요
 **프로필 사진 처리 및 전송 관리**를 담당합니다. 이미지 리사이징, 압축, 글로벌 큐를 통한 업로드/다운로드, awareness를 통한 프로필 동기화를 모두 처리합니다.
@@ -1256,12 +1419,13 @@ const {
   sendProfilePicture,
   handlePeerConnected,
   initializeProfilePictures,
-  getProfileOriginalFileId
+  getProfileOriginalFileId,
+  createProfileHandlers,
 } = useProfilePicture(
   provider,                    // WebrtcProvider
-  myUuid,                      // 내 사용자 ID
+  myUserId,                    // string
   files,                       // Y.Map<FileMeta> (선택)
-  registerFileAvailability     // 파일 소유권 브로드캐스트 함수 (선택)
+  registerFileAvailability     // 파일 소유권 등록 함수 (선택)
 )
 ```
 
@@ -1270,7 +1434,6 @@ const {
 #### `myProfilePicture`
 - **타입**: `ref<string | null>`
 - **설명**: 내 프로필 사진 (data URL)
-- **예시**: `data:image/jpeg;base64,/9j/4AAQSkZJRg...`
 
 #### `profilePictures`
 - **타입**: `reactive<Map<userId, base64Data>>`
@@ -1294,7 +1457,6 @@ if (avatarUrl) {
 - **시점**: 채팅방 입장 직후 무조건 호출
 - **역할**:
   - 내 프로필 사진 IndexedDB에서 로드
-  - awareness에 프로필 존재 알림
   - 수신 리스너 설정
 - **예시**:
 ```typescript
@@ -1306,19 +1468,18 @@ await initializeProfilePictures() // 필수!
 - **시점**: 사용자가 프로필 사진 업로드 버튼을 누를 때
 - **자동 처리**:
   1. 원본 파일을 파일 전송 시스템에 저장 (고해상도 원본)
-  2. 이미지 리사이징 (최대 256px x 256px)
-  3. JPEG 압축 (품질 자동 조정, 최대 100KB)
-  4. IndexedDB에 저장
-  5. awareness에 프로필 존재 알림
-  6. 연결된 모든 피어에게 자동 전송
+  2. 이미지 리사이징 및 압축 (썸네일)
+  3. 로컬 저장
+  4. awareness에 프로필 존재 알림
+  5. 연결된 모든 피어에게 자동 전송
 - **예시**:
 ```typescript
 async function uploadProfilePicture(file: File) {
   try {
     await setMyProfilePicture(file)
-    alert('프로필 사진 설정 완료!')
+    console.log('프로필 사진 설정 완료')
   } catch (error) {
-    alert('프로필 사진 설정 실패: ' + error.message)
+    console.error('프로필 사진 설정 실패:', error)
   }
 }
 ```
@@ -1333,7 +1494,7 @@ await deleteMyProfilePicture()
 
 #### `sendProfilePicture(targetPeerId: string): Promise<void>`
 - **용도**: 특정 피어에게 프로필 사진 전송
-- **시점**: 
+- **시점**:
   - 피어 연결 시 자동 호출됨
   - 수동으로 재전송 필요 시
 - **자동 처리**: 글로벌 큐를 통해 최우선 순위로 전송
@@ -1347,18 +1508,13 @@ await sendProfilePicture('peer-456')
 - **시점**: WebRTC 연결이 성립했을 때
 - **역할**:
   - 내 프로필 사진이 있으면 자동 전송
-  - 상대방 프로필 사진이 있으면 자동 요청
-  - 중복 전송/요청 방지
+  - 상대방의 프로필 사진 확인 및 요청
 - **예시**:
 ```typescript
 // useWebrtcConnection에서 자동 호출됨
 provider.awareness.on('change', () => {
-  for (const [, state] of provider.awareness.getStates()) {
-    const peerId = state.userUuid
-    if (peerId && peerId !== myUuid) {
-      handlePeerConnected(peerId)
-    }
-  }
+  // 피어 연결 감지 로직
+  handlePeerConnected(peerId)
 })
 ```
 
@@ -1378,11 +1534,11 @@ if (originalFileId) {
 ### 이미지 처리 상세
 
 #### 리사이징 및 압축
-1. **최대 크기**: 256px x 256px (긴 쪽 기준, 비율 유지)
+1. **최대 크기**: 300px x 300px (긴 쪽 기준, 비율 유지)
 2. **포맷**: JPEG
-3. **초기 품질**: 0.85
-4. **최대 크기**: 100KB
-5. **자동 조정**: 크기가 100KB를 초과하면 품질을 자동으로 낮춤 (최소 0.1)
+3. **품질**: 0.8
+4. **최대 크기**: 80KB
+5. **자동 조정**: 크기가 80KB를 초과하면 품질을 자동으로 낮춤 (최소 0.1)
 
 #### 저장 형태
 - **썸네일**: Base64로 IndexedDB에 저장 (빠른 로드)
@@ -1393,43 +1549,26 @@ if (originalFileId) {
 ```vue
 <template>
   <div class="profile-section">
-    <!-- 내 프로필 사진 -->
-    <div class="my-profile">
-      <img v-if="myProfilePicture" 
-           :src="myProfilePicture" 
-           alt="내 프로필" />
-      <div v-else class="no-profile">프로필 없음</div>
-      
-      <input type="file" 
-             ref="fileInput"
-             accept="image/*"
-             @change="handleFileSelect"
-             style="display: none" />
-      
-      <button @click="$refs.fileInput.click()">
-        {{ myProfilePicture ? '변경' : '설정' }}
-      </button>
-      
-      <button v-if="myProfilePicture" 
-              @click="deleteMyProfilePicture">
-        삭제
-      </button>
+    <!-- 현재 프로필 사진 표시 -->
+    <img
+      v-if="myProfilePicture"
+      :src="myProfilePicture"
+      alt="내 프로필"
+      class="profile-avatar"
+    />
+    <div v-else class="default-avatar">
+      {{ userName.charAt(0).toUpperCase() }}
     </div>
-    
-    <!-- 다른 사용자 프로필 -->
-    <div v-for="msg in messages" :key="msg.id" class="message">
-      <img v-if="getUserProfilePicture(msg.authorTrueUuid)"
-           :src="getUserProfilePicture(msg.authorTrueUuid)"
-           alt="프로필"
-           class="avatar" />
-      <div v-else class="default-avatar">
-        {{ msg.authorName[0] }}
-      </div>
-      <div class="message-content">
-        <strong>{{ msg.authorName }}</strong>
-        <p>{{ msg.text }}</p>
-      </div>
-    </div>
+
+    <!-- 업로드 버튼 -->
+    <input
+      type="file"
+      accept="image/*"
+      @change="handleFileSelect"
+      ref="fileInput"
+    />
+    <button @click="$refs.fileInput.click()">프로필 사진 변경</button>
+    <button v-if="myProfilePicture" @click="deleteProfilePicture">삭제</button>
   </div>
 </template>
 
@@ -1443,10 +1582,10 @@ const {
   setMyProfilePicture,
   deleteMyProfilePicture,
   initializeProfilePictures,
-  handlePeerConnected
+  createProfileHandlers,
 } = useProfilePicture(
   provider,
-  myUuid,
+  myUserId,
   files,
   registerFileAvailability
 )
@@ -1459,84 +1598,71 @@ onMounted(async () => {
 // 프로필 사진 업로드
 async function handleFileSelect(event) {
   const file = event.target.files?.[0]
-  if (!file) return
-  
-  if (!file.type.startsWith('image/')) {
-    alert('이미지 파일만 선택할 수 있습니다')
-    return
-  }
-  
-  try {
-    await setMyProfilePicture(file)
-    alert('프로필 사진 설정 완료!')
-  } catch (error) {
-    alert('프로필 사진 설정 실패: ' + error.message)
+  if (file) {
+    try {
+      await setMyProfilePicture(file)
+      console.log('프로필 사진 설정 완료')
+    } catch (error) {
+      console.error('프로필 사진 설정 실패:', error)
+      alert('프로필 사진 설정에 실패했습니다.')
+    }
   }
 }
 
-// 피어 연결 시 프로필 교환
-watch(() => Array.from(provider.awareness.getStates().keys()), (clientIds) => {
-  for (const clientId of clientIds) {
-    const state = provider.awareness.getStates().get(clientId)
-    const peerId = state?.userUuid
-    if (peerId && peerId !== myUuid) {
-      handlePeerConnected(peerId)
-    }
+// 헬퍼 함수 사용
+const { handleUpload, handleDelete } = createProfileHandlers()
+
+// 또는 직접 사용
+const deleteProfilePicture = async () => {
+  try {
+    await deleteMyProfilePicture()
+    console.log('프로필 사진 삭제 완료')
+  } catch (error) {
+    console.error('프로필 사진 삭제 실패:', error)
   }
-})
+}
 </script>
 
 <style scoped>
-.avatar {
-  width: 40px;
-  height: 40px;
+.profile-avatar {
+  width: 100px;
+  height: 100px;
   border-radius: 50%;
   object-fit: cover;
 }
 
 .default-avatar {
-  width: 40px;
-  height: 40px;
+  width: 100px;
+  height: 100px;
   border-radius: 50%;
-  background: #3b82f6;
-  color: white;
+  background: #ccc;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: bold;
+  font-size: 36px;
+  color: #666;
 }
 </style>
 ```
 
 ---
 
-## 16. useStorageProfilePicture
+## 18. useStorageProfilePicture
 
 ### 개요
-**IndexedDB를 사용한 프로필 사진 로컬 저장**을 관리합니다. Base64 형태로 저장하여 빠른 로드를 지원합니다.
+**IndexedDB를 사용하여 사용자별 프로필 사진을 로컬에 저장하는 스토리지 관리**입니다. Base64 형태로 저장합니다.
 
 ### 함수
 
 #### `saveProfilePicture(profile: ProfilePicture): Promise<void>`
-- **용도**: 프로필 사진을 IndexedDB에 저장
-- **시점**: 프로필 사진 설정 또는 수신 시
-- **파라미터**:
-```typescript
-interface ProfilePicture {
-  userId: string          // 사용자 ID (키)
-  imageData: string       // Base64 인코딩된 이미지
-  timestamp: number       // 저장 시각
-  size: number           // 바이트 크기
-  originalFileId?: string // 원본 파일 ID (선택)
-}
-```
+- **용도**: 프로필 사진 저장
 - **예시**:
 ```typescript
-const profile = {
+const profile: ProfilePicture = {
   userId: 'user-123',
-  imageData: 'base64data...',
+  imageData: 'data:image/jpeg;base64,...',
   timestamp: Date.now(),
-  size: 50000,
+  size: 51234,
   originalFileId: 'file-456'
 }
 await saveProfilePicture(profile)
@@ -1544,8 +1670,7 @@ await saveProfilePicture(profile)
 
 #### `getProfilePicture(userId: string): Promise<ProfilePicture | null>`
 - **용도**: 프로필 사진 조회
-- **시점**: 프로필 사진을 표시하려고 할 때
-- **반환값**: 저장된 프로필 또는 `null`
+- **반환값**: 저장된 프로필 사진 또는 `null`
 - **예시**:
 ```typescript
 const profile = await getProfilePicture('user-123')
@@ -1556,99 +1681,58 @@ if (profile) {
 
 #### `hasProfilePicture(userId: string): Promise<boolean>`
 - **용도**: 프로필 사진 존재 여부 확인
-- **시점**: 프로필 사진 요청 전 확인
 - **예시**:
 ```typescript
 if (await hasProfilePicture('user-123')) {
-  console.log('프로필 사진 있음')
+  showAvatar()
 }
 ```
 
 #### `deleteProfilePicture(userId: string): Promise<void>`
 - **용도**: 프로필 사진 삭제
-- **시점**: 사용자가 프로필 사진을 삭제할 때
 - **예시**:
 ```typescript
-await deleteProfilePicture(myUuid)
+await deleteProfilePicture('user-123')
 ```
 
 #### `getAllProfilePictures(): Promise<ProfilePicture[]>`
 - **용도**: 모든 프로필 사진 조회
-- **시점**: 프로필 목록 표시 또는 백업 시
 - **예시**:
 ```typescript
 const allProfiles = await getAllProfilePictures()
-console.log(`총 ${allProfiles.length}개의 프로필 사진`)
+console.log(`${allProfiles.length}개의 프로필 사진`)
 ```
 
-### 데이터베이스 구조
+### ProfilePicture 구조
 
-- **DB Name**: `chitchat-profile-pictures`
-- **Store Name**: `profiles`
-- **Key Path**: `userId`
-- **Version**: 1
+```typescript
+interface ProfilePicture {
+  userId: string          // 사용자 ID
+  imageData: string       // Base64 인코딩된 이미지 데이터
+  timestamp: number       // 저장 시각
+  size: number           // 파일 크기 (bytes)
+  originalFileId?: string // 원본 파일 ID (선택)
+}
+```
 
 ### 사용 예시
 
 ```typescript
-import {
-  saveProfilePicture,
-  getProfilePicture,
-  hasProfilePicture,
-  deleteProfilePicture,
-  getAllProfilePictures
-} from '@/composables/useStorageProfilePicture'
+// 저장
+await saveProfilePicture({
+  userId: 'user-123',
+  imageData: base64Data,
+  timestamp: Date.now(),
+  size: 51234
+})
 
-// 프로필 저장
-async function saveProfile(userId: string, imageData: string) {
-  const profile = {
-    userId,
-    imageData,
-    timestamp: Date.now(),
-    size: Math.ceil((imageData.length * 3) / 4) // Base64 크기 계산
-  }
-  await saveProfilePicture(profile)
-  console.log('프로필 저장 완료')
-}
-
-// 프로필 로드
-async function loadProfile(userId: string) {
-  const profile = await getProfilePicture(userId)
-  if (profile) {
-    return `data:image/jpeg;base64,${profile.imageData}`
-  }
-  return null
-}
-
-// 프로필 존재 확인
-async function checkProfile(userId: string) {
-  const exists = await hasProfilePicture(userId)
-  console.log(`프로필 ${exists ? '있음' : '없음'}`)
-}
-
-// 프로필 삭제
-async function removeProfile(userId: string) {
-  await deleteProfilePicture(userId)
-  console.log('프로필 삭제 완료')
-}
-
-// 모든 프로필 조회
-async function listAllProfiles() {
-  const profiles = await getAllProfilePictures()
-  console.log('저장된 프로필:')
-  for (const profile of profiles) {
-    console.log(`- ${profile.userId}: ${profile.size} bytes (${new Date(profile.timestamp).toLocaleString()})`)
-  }
+// 조회
+const profile = await getProfilePicture('user-123')
+if (profile) {
+  const dataUrl = `data:image/jpeg;base64,${profile.imageData}`
+  imgElement.src = dataUrl
 }
 ```
-
-### 참고사항
-
-- **자동 처리**: `useProfilePicture`가 자동으로 호출하므로 직접 사용할 일은 적습니다
-- **캐시 역할**: 네트워크 없이도 프로필 사진을 빠르게 로드할 수 있습니다
-- **용량 관리**: 프로필 사진은 압축되어 평균 20-50KB 정도입니다
-
----
 
 ## 전체 사용 흐름 예시
 
