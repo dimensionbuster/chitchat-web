@@ -180,7 +180,7 @@ onMounted(async () => {
   border-radius: var(--radius-xl);
   padding: var(--spacing-lg);
   box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(var(--bg-blur-home, 20px));
 }
 
 /* 헤더 섹션 */

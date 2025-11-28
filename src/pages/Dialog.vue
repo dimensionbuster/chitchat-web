@@ -1,6 +1,8 @@
 <script setup lang="ts">
 defineOptions({ name: 'DialogPage' })
-import { onMounted, ref, nextTick } from 'vue'
+import { onMounted, ref, nextTick, computed } from 'vue'
+import { useBackgroundImage } from '@/composables/useBackgroundImage'
+import { useStyleSettings } from '@/composables/useStyleSettings'
 
 const props = defineProps<{
   message: string
@@ -9,6 +11,24 @@ const props = defineProps<{
 }>()
 
 const dialogContainerRef = ref<HTMLElement | null>(null)
+
+// 배경 이미지 (홈 화면과 동일하게 사용)
+const { currentBackground } = useBackgroundImage('home')
+
+// 스타일 설정 (실시간 CSS 변수 업데이트)
+useStyleSettings()
+
+const backgroundStyle = computed(() => {
+  if (currentBackground.value) {
+    return {
+      backgroundImage: `url(${currentBackground.value})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat'
+    }
+  }
+  return {}
+})
 
 const handleConfirm = () => {
   if (window.electronApi) {
@@ -47,7 +67,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="dialog-page">
+  <div class="dialog-page" :style="backgroundStyle">
+    <!-- 오버레이 (커스텀 배경이 있을 때만) -->
+    <div v-if="currentBackground" class="background-overlay"></div>
+
     <div ref="dialogContainerRef" class="dialog-container">
       <div class="dialog-icon">
         {{ type === 'confirm' ? '❓' : 'ℹ️' }}
@@ -70,15 +93,24 @@ onMounted(async () => {
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  background: var(--bg-card-solid, #ffffff);
+  background: var(--gradient-primary);
   padding: 0;
   margin: 0;
+  position: relative;
+}
+
+.background-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(var(--bg-primary-rgb, 255, 255, 255), var(--bg-overlay-opacity-home, 0.75));
+  pointer-events: none;
+  z-index: 0;
 }
 
 .dialog-container {
   width: 100%;
   height: 100%;
-  background: var(--bg-modal, rgba(255, 255, 255, 0.98));
+  background: var(--bg-card);
   border-radius: var(--radius-lg, 14px);
   padding: var(--spacing-xl, 24px);
   min-width: 280px;
@@ -87,6 +119,10 @@ onMounted(async () => {
   flex-direction: column;
   align-items: center;
   border: 1px solid var(--border-light, rgba(156, 124, 181, 0.15));
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(var(--bg-blur-home, 20px));
+  position: relative;
+  z-index: 1;
 }
 
 .dialog-icon {

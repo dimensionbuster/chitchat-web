@@ -116,7 +116,7 @@ const onFileChange = (e: Event) => {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-xl);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--bg-blur-chat, 10px));
 }
 
 .text-input {

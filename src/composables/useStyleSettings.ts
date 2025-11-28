@@ -54,6 +54,11 @@ export interface StyleSettings {
     chat: number
     notification: number
   }
+  // 배경 블러 효과 (0 = 블러 없음, 20 = 최대 블러)
+  backgroundBlur: {
+    home: number
+    chat: number
+  }
   // 색상 설정
   colors: ColorSettings
 }
@@ -68,6 +73,10 @@ const DEFAULT_SETTINGS: StyleSettings = {
     home: 0.75,
     chat: 0.75,
     notification: 0.6
+  },
+  backgroundBlur: {
+    home: 20,
+    chat: 10
   },
   colors: { ...DEFAULT_COLORS }
 }
@@ -98,6 +107,9 @@ function applyCSSVariables(s: StyleSettings) {
   root.style.setProperty('--bg-overlay-opacity-home', String(s.backgroundOverlay.home))
   root.style.setProperty('--bg-overlay-opacity-chat', String(s.backgroundOverlay.chat))
   root.style.setProperty('--bg-overlay-opacity-notification', String(s.backgroundOverlay.notification))
+  // 블러 설정
+  root.style.setProperty('--bg-blur-home', `${s.backgroundBlur.home}px`)
+  root.style.setProperty('--bg-blur-chat', `${s.backgroundBlur.chat}px`)
 
   // 색상 설정
   if (s.colors) {
@@ -293,6 +305,10 @@ function mergeWithDefaults(saved: Partial<StyleSettings>): StyleSettings {
       chat: saved.backgroundOverlay?.chat ?? DEFAULT_SETTINGS.backgroundOverlay.chat,
       notification: saved.backgroundOverlay?.notification ?? DEFAULT_SETTINGS.backgroundOverlay.notification
     },
+    backgroundBlur: {
+      home: saved.backgroundBlur?.home ?? DEFAULT_SETTINGS.backgroundBlur.home,
+      chat: saved.backgroundBlur?.chat ?? DEFAULT_SETTINGS.backgroundBlur.chat
+    },
     colors: {
       gradientStart: saved.colors?.gradientStart ?? DEFAULT_COLORS.gradientStart,
       gradientMid: saved.colors?.gradientMid ?? DEFAULT_COLORS.gradientMid,
@@ -377,6 +393,22 @@ export function useStyleSettings() {
       ...settings.value,
       backgroundOverlay: {
         ...settings.value.backgroundOverlay,
+        [type]: clampedValue
+      }
+    }
+    settings.value = newSettings
+    applyCSSVariables(newSettings)
+    debouncedSaveSettings(newSettings)  // 디바운스된 저장
+    broadcastSettingsChange(newSettings)
+  }
+
+  // 배경 블러 효과 설정
+  function setBackgroundBlur(type: 'home' | 'chat', value: number): void {
+    const clampedValue = Math.max(0, Math.min(20, value))
+    const newSettings: StyleSettings = {
+      ...settings.value,
+      backgroundBlur: {
+        ...settings.value.backgroundBlur,
         [type]: clampedValue
       }
     }
@@ -506,6 +538,7 @@ export function useStyleSettings() {
     initialize,
     setContainerOpacity,
     setBackgroundOverlay,
+    setBackgroundBlur,
     setColor,
     setColors,
     applyTemplate,

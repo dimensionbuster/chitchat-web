@@ -15,6 +15,7 @@ const {
   initialize,
   setContainerOpacity,
   setBackgroundOverlay,
+  setBackgroundBlur,
   setColor,
   applyTemplate,
   exportSettings,
@@ -125,6 +126,8 @@ async function handleResetAll() {
 // Computed values for display
 const displayContainerOpacity = computed(() => settings.value.containerOpacity.chat)
 const displayOverlayOpacity = computed(() => settings.value.backgroundOverlay.chat)
+const displayHomeBlur = computed(() => settings.value.backgroundBlur.home)
+const displayChatBlur = computed(() => settings.value.backgroundBlur.chat)
 
 // Update container opacity for all types
 function handleContainerOpacityChange(event: Event) {
@@ -139,6 +142,18 @@ function handleOverlayOpacityChange(event: Event) {
   setBackgroundOverlay('home', value)
   setBackgroundOverlay('chat', value)
   setBackgroundOverlay('notification', value)
+}
+
+// Update blur for home
+function handleHomeBlurChange(event: Event) {
+  const value = (event.target as HTMLInputElement).valueAsNumber
+  setBackgroundBlur('home', value)
+}
+
+// Update blur for chat
+function handleChatBlurChange(event: Event) {
+  const value = (event.target as HTMLInputElement).valueAsNumber
+  setBackgroundBlur('chat', value)
 }
 
 // Color setting handlers
@@ -335,6 +350,51 @@ onMounted(async () => {
                   class="slider"
                 />
                 <span class="slider-label">불투명</span>
+              </div>
+            </div>
+
+            <!-- Background Blur -->
+            <div class="opacity-group">
+              <div class="opacity-header">
+                <label>홈 화면 블러 효과</label>
+                <span class="opacity-value">{{ Math.round(displayHomeBlur) }}px</span>
+              </div>
+              <p class="opacity-description">
+                홈 화면 컨테이너의 블러 효과 강도를 조절합니다. 값이 높을수록 배경 이미지가 더 흐릿해집니다.
+              </p>
+              <div class="slider-container">
+                <span class="slider-label">선명</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="20"
+                  :value="Math.round(displayHomeBlur)"
+                  @input="handleHomeBlurChange"
+                  class="slider"
+                />
+                <span class="slider-label">흐림</span>
+              </div>
+            </div>
+
+            <div class="opacity-group">
+              <div class="opacity-header">
+                <label>채팅 화면 블러 효과</label>
+                <span class="opacity-value">{{ Math.round(displayChatBlur) }}px</span>
+              </div>
+              <p class="opacity-description">
+                채팅 화면 컨테이너의 블러 효과 강도를 조절합니다. 값이 높을수록 배경 이미지가 더 흐릿해집니다.
+              </p>
+              <div class="slider-container">
+                <span class="slider-label">선명</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="20"
+                  :value="Math.round(displayChatBlur)"
+                  @input="handleChatBlurChange"
+                  class="slider"
+                />
+                <span class="slider-label">흐림</span>
               </div>
             </div>
           </div>

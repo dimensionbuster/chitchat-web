@@ -600,7 +600,7 @@ const handleImportSnapshot = async () => {
   justify-content: center;
   z-index: 999;
   pointer-events: none;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(var(--bg-blur-chat, 4px));
 }
 
 .drop-message {
@@ -631,7 +631,7 @@ const handleImportSnapshot = async () => {
   align-items: center;
   justify-content: center;
   z-index: var(--z-modal);
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(var(--bg-blur-chat, 4px));
 }
 
 .modal-content {

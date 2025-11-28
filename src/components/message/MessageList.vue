@@ -141,7 +141,7 @@ defineExpose({ scrollToBottom })
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--bg-blur-chat, 10px));
 }
 
 .status-message,
