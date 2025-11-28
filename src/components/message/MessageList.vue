@@ -3,7 +3,7 @@ defineOptions({ name: 'MessageList' })
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import type { ChatMessage as ChatMessageType, FileMeta } from '@/types/types'
 import type { Map as YMap } from 'yjs'
-import ChatMessage from './ChatMessage.vue'
+import ChatMessage from '@/components/message/ChatMessage.vue'
 
 defineProps<{
   messages: readonly ChatMessageType[]
@@ -125,56 +125,60 @@ defineExpose({ scrollToBottom })
 <style scoped>
 .message-list-container {
   position: relative;
-  height: 80%;
+  flex: 1;
+  min-height: 0;
 }
 
 .message-list {
   height: 100%;
   list-style: none;
-  padding: 0;
+  padding: var(--spacing-md);
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  overflow-y: scroll;
+  gap: 0;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, var(--container-opacity-chat, 0.85));
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(10px);
 }
 
 .status-message,
 .loading-message {
-  font-size: 14px;
-  color: #888;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
   text-align: center;
-  padding: 12px;
+  padding: var(--spacing-md);
 }
 
 .loading-message {
-  color: #4a90e2;
-  font-weight: 500;
+  color: var(--color-primary);
+  font-weight: var(--font-weight-medium);
 }
 
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: 20px;
-  right: 20px;
+  bottom: var(--spacing-xl);
+  right: var(--spacing-xl);
   width: 48px;
   height: 48px;
-  border-radius: 50%;
-  background: #4a90e2;
-  color: white;
-  border: none;
-  box-shadow: 0 4px 12px rgba(74, 144, 226, 0.4);
+  border-radius: var(--radius-full);
+  background: var(--gradient-primary);
+  color: var(--text-on-gradient);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
-  z-index: 100;
+  transition: all var(--transition-fast);
+  z-index: var(--z-dropdown);
 }
 
 .scroll-to-bottom-btn:hover {
-  background: #357abd;
   transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(74, 144, 226, 0.5);
+  box-shadow: var(--shadow-xl);
 }
 
 .scroll-to-bottom-btn:active {
@@ -183,7 +187,7 @@ defineExpose({ scrollToBottom })
 
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition: opacity var(--transition-normal), transform var(--transition-normal);
 }
 
 .fade-enter-from {

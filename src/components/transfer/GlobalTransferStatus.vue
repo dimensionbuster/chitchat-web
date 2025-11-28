@@ -110,37 +110,38 @@ const formatSize = (bytes: number) => {
   right: 20px;
   min-width: 300px;
   max-width: 400px;
-  background: white;
-  border: 1px solid #dee2e6;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  background: var(--bg-glass);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
   z-index: 1000;
   overflow: hidden;
+  backdrop-filter: blur(12px);
 }
 
 .transfer-list {
-  padding: 12px;
+  padding: var(--spacing-md);
   max-height: 300px;
   overflow-y: auto;
 }
 
 .transfer-header {
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #e9ecef;
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .transfer-title {
-  font-weight: 600;
-  font-size: 14px;
-  color: #495057;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
 }
 
 .transfer-item {
-  margin-bottom: 12px;
-  padding: 8px;
-  background: #f8f9fa;
-  border-radius: 6px;
+  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-sm);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
 }
 
 .transfer-item:last-child {
@@ -150,19 +151,19 @@ const formatSize = (bytes: number) => {
 .transfer-info {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  font-size: 13px;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
+  font-size: var(--font-size-sm);
 }
 
 .transfer-type {
-  font-size: 16px;
+  font-size: var(--font-size-lg);
 }
 
 .transfer-name {
   flex: 1;
-  font-weight: 500;
-  color: #212529;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -175,81 +176,81 @@ const formatSize = (bytes: number) => {
   min-width: 24px;
   height: 18px;
   padding: 0 6px;
-  background: #ffc107;
-  color: #000;
-  font-size: 11px;
-  font-weight: 700;
-  border-radius: 9px;
+  background: var(--gradient-primary);
+  color: var(--text-on-gradient);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  border-radius: var(--radius-full);
 }
 
 .transfer-progress {
   font-family: monospace;
-  font-size: 12px;
-  color: #6c757d;
-  font-weight: 600;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .transfer-size {
-  font-size: 11px;
-  color: #868e96;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
 }
 
 .transfer-details {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid #dee2e6;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+  padding-top: var(--spacing-xs);
+  border-top: 1px solid var(--border-light);
 }
 
 .peer-progress {
-  font-size: 11px;
-  color: #495057;
-  background: #e9ecef;
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: monospace;
 }
 
 .transfer-bar {
   height: 4px;
-  background: #e9ecef;
-  border-radius: 2px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
   overflow: hidden;
 }
 
 .transfer-bar-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   transition: width 0.3s ease;
 }
 
 .transfer-bar-fill.upload {
-  background: linear-gradient(90deg, #ff6b6b 0%, #ff8787 100%);
+  background: var(--gradient-primary);
 }
 
 .transfer-bar-fill.download {
-  background: linear-gradient(90deg, #0078d4 0%, #00bcf2 100%);
+  background: var(--gradient-accent);
 }
 
 .queue-info {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  background: #fff3cd;
-  border-top: 1px solid #ffeaa7;
-  font-size: 13px;
-  color: #856404;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-warning-bg);
+  border-top: 1px solid var(--color-warning);
+  font-size: var(--font-size-sm);
+  color: var(--color-warning-text);
 }
 
 .queue-icon {
-  font-size: 16px;
+  font-size: var(--font-size-lg);
 }
 
 .queue-text {
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
 }
 
 /* 스크롤바 스타일 */
@@ -258,16 +259,16 @@ const formatSize = (bytes: number) => {
 }
 
 .transfer-list::-webkit-scrollbar-track {
-  background: #f1f3f5;
-  border-radius: 3px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
 }
 
 .transfer-list::-webkit-scrollbar-thumb {
-  background: #adb5bd;
-  border-radius: 3px;
+  background: var(--border-default);
+  border-radius: var(--radius-sm);
 }
 
 .transfer-list::-webkit-scrollbar-thumb:hover {
-  background: #868e96;
+  background: var(--color-primary-light);
 }
 </style>

@@ -4,6 +4,7 @@ import Home from '../pages/Home.vue'
 import ChatRoom from '../pages/ChatRoom.vue'
 import Notification from '../pages/Notification.vue'
 import Dialog from '../pages/Dialog.vue'
+import Settings from '../pages/Settings.vue'
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -42,6 +43,11 @@ const router = createRouter({
         type: (route.query.type as 'alert' | 'confirm') || 'alert',
         dialogId: (route.query.dialogId as string) || '',
       }),
+    },
+    {
+      path: '/settings',
+      name: 'Settings',
+      component: Settings,
     },
   ],
 })

@@ -2,9 +2,9 @@
 defineOptions({ name: 'ChatMessage' })
 import { computed } from 'vue'
 import type { ChatMessage, FileMeta } from '@/types/types'
-import ImageMessage from './ImageMessage.vue'
-import FileMessage from './FileMessage.vue'
-import ProfileAvatar from './ProfileAvatar.vue'
+import ImageMessage from '@/components/image/ImageMessage.vue'
+import FileMessage from '@/components/file/FileMessage.vue'
+import ProfileAvatar from '@/components/profile/ProfileAvatar.vue'
 
 const props = defineProps<{
   prevMessage?: ChatMessage
@@ -66,17 +66,17 @@ const showOnlyMessage = computed(() => {
 </script>
 
 <template>
-  <li class="chat-message">
+  <li class="chat-message" :class="{ 'continuation': showOnlyMessage }">
     <ProfileAvatar
       v-if="!showOnlyMessage"
       :imageUrl="profilePicture || null"
       :userName="getAuthor(message)"
-      :size="45"
+      :size="40"
       :clickable="true"
       class="message-avatar"
       @click="emit('viewProfile', message.authorTrueUuid)"
     />
-    <div v-else style="width: 45px; flex-shrink: 0;"></div>
+    <div v-else class="avatar-placeholder"></div>
     <div class="message-content">
       <div class="message-header" v-if="!showOnlyMessage">
         <strong class="author">{{ getAuthor(message) }}</strong>
@@ -119,10 +119,15 @@ const showOnlyMessage = computed(() => {
 <style scoped>
 .chat-message {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-sm);
   align-items: flex-start;
-  font-size: 14px;
-  padding: 2px 0;
+  font-size: var(--font-size-base);
+  padding-top: var(--spacing-sm);
+}
+
+/* 연속 메시지일 때 간격 줄이기 */
+.chat-message.continuation {
+  padding-top: 1px;
 }
 
 .message-avatar {
@@ -130,37 +135,51 @@ const showOnlyMessage = computed(() => {
   margin-top: 2px;
 }
 
+.avatar-placeholder {
+  width: 40px;
+  flex-shrink: 0;
+}
+
 .message-content {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  justify-content: space-between;
-  height: 100%;
+  gap: 2px;
 }
 
 .message-header {
   display: flex;
   align-items: baseline;
-  padding-top: 5px;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 .author {
-  font-weight: 600;
-  color: #333;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .timestamp {
-  color: #888;
-  font-size: 12px;
-  font-family: monospace;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family-mono);
 }
 
 .message-text {
   word-wrap: break-word;
   word-break: break-word;
   user-select: text;
+  color: var(--text-primary);
+  line-height: var(--line-height-normal);
+}
+
+.message-text :deep(.message-link) {
+  color: var(--text-link);
+  text-decoration: underline;
+  transition: color var(--transition-fast);
+}
+
+.message-text :deep(.message-link:hover) {
+  color: var(--text-link-hover);
 }
 </style>

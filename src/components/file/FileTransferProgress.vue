@@ -66,44 +66,45 @@ const formatSpeed = computed(() => {
 
 <style scoped>
 .progress-container {
-  margin-top: 8px;
-  padding: 12px;
-  background: #f8f9fa;
-  border: 1px solid #dee2e6;
-  border-radius: 6px;
-  font-size: 13px;
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background: var(--bg-glass);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-sm);
+  backdrop-filter: blur(8px);
 }
 
 .progress-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: var(--spacing-xs);
 }
 
 .progress-label {
-  font-weight: 500;
-  color: #495057;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
 }
 
 .progress-speed {
-  font-size: 12px;
-  color: #6c757d;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
   font-family: monospace;
 }
 
 .progress-bar-wrapper {
   height: 8px;
-  background: #e9ecef;
-  border-radius: 4px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
   overflow: hidden;
   position: relative;
 }
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #0078d4 0%, #00bcf2 100%);
-  border-radius: 4px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-full);
   transition: width 0.3s ease;
   position: relative;
   overflow: hidden;
@@ -119,7 +120,7 @@ const formatSpeed = computed(() => {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0.4) 50%,
     transparent 100%
   );
   animation: shimmer 2s infinite;
@@ -137,13 +138,13 @@ const formatSpeed = computed(() => {
 .progress-info {
   display: flex;
   justify-content: space-between;
-  margin-top: 6px;
-  font-size: 11px;
-  color: #6c757d;
+  margin-top: var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
 }
 
 .file-name {
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   max-width: 70%;
   overflow: hidden;
   text-overflow: ellipsis;

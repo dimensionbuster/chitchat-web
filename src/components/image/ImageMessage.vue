@@ -2,8 +2,8 @@
 defineOptions({ name: 'ImageMessage' })
 import { computed, ref } from 'vue'
 import type { FileMeta } from '@/types/types'
-import FileTransferProgress from './FileTransferProgress.vue'
-import ImageModal from './ImageModal.vue'
+import FileTransferProgress from '@/components/file/FileTransferProgress.vue'
+import ImageModal from '@/components/image/ImageModal.vue'
 import { useFileTransferProgress } from '@/composables/useFileTransferProgress'
 import { FILE_DATA_THRESHOLD } from '@/composables/fileConstants'
 
@@ -118,82 +118,85 @@ const showProgress = computed(() => isTransferring(props.fileId))
 
 <style scoped>
 .image-message {
-  margin-top: 8px;
+  margin-top: var(--spacing-sm);
 }
 
 .loading-text {
-  color: #888;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .error-container {
-  margin-top: 4px;
-  padding: 12px;
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  border-radius: 4px;
+  margin-top: var(--spacing-xs);
+  padding: var(--spacing-md);
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
   max-width: 400px;
 }
 
 .error-text {
-  color: #856404;
-  font-weight: 500;
+  color: var(--color-warning-text);
+  font-weight: var(--font-weight-medium);
 }
 
 .error-details {
-  font-size: 12px;
-  color: #856404;
-  margin-top: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-warning-text);
+  margin-top: var(--spacing-xs);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .retry-button {
-  margin-top: 8px;
-  padding: 6px 12px;
-  background: #ffc107;
-  color: #000;
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: var(--color-warning);
+  color: var(--color-warning-text);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 13px;
-  transition: background 0.2s;
+  font-size: var(--font-size-sm);
+  transition: all var(--transition-fast);
 }
 
 .retry-button:hover {
-  background: #e0a800;
+  filter: brightness(0.9);
 }
 
 .image-container {
-  margin-top: 4px;
+  margin-top: var(--spacing-xs);
 }
 
 .image-preview {
   max-width: 400px;
   max-height: 300px;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   display: block;
-  transition: transform 0.2s;
+  transition: all var(--transition-fast);
+  border: 2px solid var(--border-light);
 }
 
 .image-preview:hover {
   transform: scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--color-primary-light);
 }
 
 .filename {
-  font-size: 12px;
-  color: #666;
-  margin-top: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  margin-top: var(--spacing-xs);
 }
 
 /* 큰 이미지 플레이스홀더 */
 .large-image-placeholder {
-  margin-top: 4px;
-  padding: 16px;
-  border: 2px dashed #ccc;
-  border-radius: 8px;
-  background: #f9f9f9;
+  margin-top: var(--spacing-xs);
+  padding: var(--spacing-lg);
+  border: 2px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
   max-width: 400px;
   text-align: center;
 }
@@ -202,8 +205,8 @@ const showProgress = computed(() => isTransferring(props.fileId))
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
 }
 
 .image-icon {
@@ -215,36 +218,38 @@ const showProgress = computed(() => isTransferring(props.fileId))
 }
 
 .filename-large {
-  font-size: 14px;
-  font-weight: 500;
-  color: #333;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
   word-break: break-word;
 }
 
 .file-size {
-  font-size: 12px;
-  color: #666;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
   margin-top: 2px;
 }
 
 .load-button {
-  padding: 8px 16px;
-  background: #0078d4;
-  color: white;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  background: var(--gradient-primary);
+  color: var(--text-on-gradient);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 14px;
-  transition: background 0.2s;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  transition: all var(--transition-fast);
 }
 
 .load-button:hover {
-  background: #005a9e;
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .large-image-hint {
-  font-size: 11px;
-  color: #999;
-  margin-top: 8px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-top: var(--spacing-sm);
 }
 </style>

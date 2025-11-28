@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatRoomPage' })
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, nextTick, watch, computed } from 'vue'
 import { useYjs } from '../composables/useYjs'
 import { useFileEncoder } from '../composables/useFileEncoder'
 import { useFileTransfer } from '../composables/useFileTransfer'
@@ -9,17 +9,19 @@ import { useFileActions } from '../composables/useFileActions'
 import { useNotification } from '../composables/useNotification'
 import { useGlobalDataChannelQueue } from '../composables/useGlobalDataChannelQueue'
 import { useProfilePicture } from '../composables/useProfilePicture'
+import { useBackgroundImage } from '../composables/useBackgroundImage'
+import { useStyleSettings } from '../composables/useStyleSettings'
 import { getCachedFile } from '../composables/useStorageFileCache'
 import { showAlert, showConfirm } from '../composables/useCustomDialog'
 import { useConnectedUsers } from '../composables/useConnectedUsers'
 import router from '@/router'
-import ChatHeader from '@/components/ChatHeader.vue'
-import MessageList from '@/components/MessageList.vue'
-import ChatInput from '@/components/ChatInput.vue'
-import QueueStatus from '@/components/QueueStatus.vue'
-import ProfilePictureUpload from '@/components/ProfilePictureUpload.vue'
-import ImageModal from '@/components/ImageModal.vue'
-import FileTransferProgress from '@/components/FileTransferProgress.vue'
+import ChatHeader from '@/components/layout/ChatHeader.vue'
+import MessageList from '@/components/message/MessageList.vue'
+import ChatInput from '@/components/message/ChatInput.vue'
+import QueueStatus from '@/components/transfer/QueueStatus.vue'
+import ProfilePictureUpload from '@/components/profile/ProfilePictureUpload.vue'
+import ImageModal from '@/components/image/ImageModal.vue'
+import FileTransferProgress from '@/components/file/FileTransferProgress.vue'
 
 const RECENT_MESSAGES_TO_LOAD = 30
 
@@ -74,6 +76,24 @@ const { handleUpload: handleProfileUpload, handleDelete: handleProfileDelete } =
 
 // 접속자 목록 기능
 const { connectedUsers, userCount } = useConnectedUsers(provider, me)
+
+// 배경 이미지
+const { currentBackground, isElectron } = useBackgroundImage('chat')
+
+// 스타일 설정 (실시간 CSS 변수 업데이트)
+useStyleSettings()
+
+const backgroundStyle = computed(() => {
+  if (currentBackground.value) {
+    return {
+      backgroundImage: `url(${currentBackground.value})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat'
+    }
+  }
+  return {}
+})
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 const showProfileModal = ref(false)
@@ -455,10 +475,14 @@ const handleImportSnapshot = async () => {
 <template>
   <div
     class="chat-room"
+    :style="backgroundStyle"
     @dragover="handleDragOver"
     @dragleave="handleDragLeave"
     @drop="handleDrop"
   >
+    <!-- 배경 오버레이 (커스텀 배경이 있을 때) -->
+    <div v-if="currentBackground" class="background-overlay"></div>
+
     <!-- 드래그 앤 드롭 오버레이 -->
     <div v-if="isDraggingOver" class="drop-overlay">
       <div class="drop-message">
@@ -471,6 +495,9 @@ const handleImportSnapshot = async () => {
       :roomId="activeRoomId"
       :userCount="userCount"
       :connectedUsers="connectedUsers"
+      :isElectron="isElectron"
+      @export="handleExportSnapshot"
+      @import="handleImportSnapshot"
       @reload="handleReload"
       @forceResync="handleForceResync"
       @goHome="handleGoHome"
@@ -500,8 +527,6 @@ const handleImportSnapshot = async () => {
       @send="handleSend"
       @uploadFile="handleUploadFile"
       @openProfileSettings="handleOpenProfileSettings"
-      @exportSnapshot="handleExportSnapshot"
-      @import="handleImportSnapshot"
       :myProfilePicture="myProfilePicture"
       :userName="myName"
     />
@@ -547,11 +572,20 @@ const handleImportSnapshot = async () => {
 .chat-room {
   height: 100%;
   width: 100%;
-  padding: 12px;
+  padding: var(--spacing-md);
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   position: relative;
+  background: var(--gradient-primary);
+}
+
+.background-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, var(--bg-overlay-opacity-chat, 0.75));
+  pointer-events: none;
+  z-index: 0;
 }
 
 .drop-overlay {
@@ -560,27 +594,30 @@ const handleImportSnapshot = async () => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 120, 212, 0.9);
+  background: linear-gradient(135deg, rgba(156, 124, 181, 0.9) 0%, rgba(212, 165, 201, 0.9) 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 999;
   pointer-events: none;
+  backdrop-filter: blur(4px);
 }
 
 .drop-message {
   text-align: center;
-  color: white;
+  color: var(--text-on-primary);
 }
 
 .drop-icon {
   font-size: 64px;
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-lg);
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.2));
 }
 
 .drop-text {
-  font-size: 24px;
-  font-weight: bold;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .modal-overlay {
@@ -589,51 +626,56 @@ const handleImportSnapshot = async () => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-modal);
+  backdrop-filter: blur(4px);
 }
 
 .modal-content {
-  background: white;
-  border-radius: 8px;
-  padding: 24px;
+  background: var(--bg-modal);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-xl);
   max-width: 400px;
   width: 90%;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--border-light);
 }
 
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-lg);
 }
 
 .modal-header h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .close-button {
-  background: none;
-  border: none;
-  font-size: 24px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  font-size: var(--font-size-lg);
   cursor: pointer;
-  color: #666;
+  color: var(--text-secondary);
   padding: 0;
   width: 32px;
   height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  transition: background 0.2s;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
 }
 
 .close-button:hover {
-  background: #f0f0f0;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 </style>

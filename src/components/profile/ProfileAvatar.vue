@@ -71,23 +71,25 @@ const getBackgroundColor = (name?: string): string => {
 
 <style scoped>
 .profile-avatar {
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   overflow: hidden;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 2px solid var(--border-light);
+  box-shadow: var(--shadow-sm);
 }
 
 .profile-avatar.clickable {
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: all var(--transition-fast);
 }
 
 .profile-avatar.clickable:hover {
   transform: scale(1.05);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-primary-light);
 }
 
 .avatar-image {
@@ -102,11 +104,13 @@ const getBackgroundColor = (name?: string): string => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
-  font-weight: bold;
+  color: var(--text-on-primary);
+  font-weight: var(--font-weight-bold);
+  background: var(--gradient-primary);
 }
 
 .avatar-initial {
   line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 </style>

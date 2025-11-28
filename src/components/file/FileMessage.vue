@@ -2,7 +2,7 @@
 defineOptions({ name: 'FileMessage' })
 import { computed } from 'vue'
 import type { FileMeta } from '@/types/types'
-import FileTransferProgress from './FileTransferProgress.vue'
+import FileTransferProgress from '@/components/file/FileTransferProgress.vue'
 import { useFileTransferProgress } from '@/composables/useFileTransferProgress'
 
 const props = defineProps<{
@@ -50,23 +50,25 @@ const showProgress = computed(() => isTransferring(props.fileId))
 .file-message {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 .file-download-button {
-  margin-left: 6px;
-  padding: 6px 12px;
+  margin-left: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-md);
   cursor: pointer;
-  background: #f0f0f0;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  font-size: 13px;
-  transition: background 0.2s;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  transition: all var(--transition-fast);
   align-self: flex-start;
 }
 
 .file-download-button:hover {
-  background: #e0e0e0;
-  border-color: #999;
+  background: var(--bg-tertiary);
+  border-color: var(--color-primary-light);
+  color: var(--color-primary);
 }
 </style>

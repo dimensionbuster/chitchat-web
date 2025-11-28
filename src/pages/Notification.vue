@@ -6,8 +6,9 @@
  * - 마우스 오버 시 타이머 일시정지
  * - 클릭 시 메인 창 포커스
  */
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { getElectronApi } from '@/util/platform'
+import { useBackgroundImage } from '@/composables/useBackgroundImage'
 
 defineOptions({ name: 'NotificationPage' })
 
@@ -29,6 +30,21 @@ const progressBarRef = ref<HTMLDivElement | null>(null)
 const displayTitle = ref<string>('New message')
 const displayMessage = ref<string>('')
 const animationState = ref<'entering' | 'shown' | 'hiding' | ''>('')
+
+// 배경 이미지
+const { currentBackground } = useBackgroundImage('notification')
+
+const backgroundStyle = computed(() => {
+  if (currentBackground.value) {
+    return {
+      backgroundImage: `url(${currentBackground.value})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat'
+    }
+  }
+  return {}
+})
 
 // 타이머 관련
 let autoCloseTimer: number | null = null
@@ -183,24 +199,30 @@ onBeforeUnmount(() => {
   <div
     class="notification"
     :class="animationState"
+    :style="backgroundStyle"
     @mouseenter="pauseAutoClose"
     @mouseleave="resumeAutoClose"
     @click="onNotificationClick"
   >
-    <div class="avatar-container">
-      <div class="avatar">💬</div>
-    </div>
+    <!-- 오버레이 (커스텀 배경이 있을 때) -->
+    <div v-if="currentBackground" class="notification-bg-overlay"></div>
 
-    <div class="content">
-      <div class="header">
-        <div class="title">{{ displayTitle }}</div>
-        <button class="close-button" @click="closeNotification">✕</button>
+    <div class="notification-inner">
+      <div class="avatar-container">
+        <div class="avatar">💬</div>
       </div>
 
-      <div class="message">{{ displayMessage }}</div>
+      <div class="content">
+        <div class="header">
+          <div class="title">{{ displayTitle }}</div>
+          <button class="close-button" @click.stop="closeNotification">✕</button>
+        </div>
 
-      <div class="progress-bar-container">
-        <div class="progress-bar" ref="progressBarRef"></div>
+        <div class="message">{{ displayMessage }}</div>
+
+        <div class="progress-bar-container">
+          <div class="progress-bar" ref="progressBarRef"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -215,7 +237,7 @@ body {
   background: transparent;
   user-select: none;
   -webkit-user-select: none;
-  font-family: system-ui, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
+  font-family: var(--font-family, system-ui, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif);
   overflow: hidden;
 }
 
@@ -224,33 +246,51 @@ body {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  padding: 10px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.87), rgba(0, 0, 0, 0.658));
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius-lg, 14px);
+  background: var(--notification-bg, linear-gradient(135deg, rgba(232, 213, 242, 0.95) 0%, rgba(252, 228, 236, 0.95) 100%));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-lg, 0 8px 32px rgba(156, 124, 181, 0.25));
+  border: 1px solid var(--notification-border, rgba(156, 124, 181, 0.3));
   overflow: hidden;
   transition: transform 160ms ease-out, opacity 160ms ease-out;
+  position: relative;
+}
+
+.notification-bg-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, var(--bg-overlay-opacity-notification, 0.6));
+  pointer-events: none;
+  z-index: 0;
+}
+
+.notification-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-md, 12px);
+  height: 100%;
+  box-sizing: border-box;
 }
 
 /* 아바타 영역 */
 .avatar-container {
-  margin-right: 8px;
+  margin-right: var(--spacing-sm, 10px);
   flex-shrink: 0;
 }
 
 .avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md, 10px);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  background: rgba(255, 255, 255, 0.04);
+  font-size: 22px;
+  background: linear-gradient(135deg, var(--color-primary-light, #d4c4e0) 0%, var(--color-secondary-light, #f5e6f0) 100%);
+  box-shadow: var(--shadow-sm, 0 2px 8px rgba(156, 124, 181, 0.15));
 }
 
 /* 콘텐츠 영역 */
@@ -268,15 +308,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 3px;
+  gap: var(--spacing-xs, 6px);
+  margin-bottom: var(--spacing-xs, 4px);
 }
 
 .title {
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 12px;
-  line-height: 1.2;
+  font-weight: var(--font-weight-semibold, 600);
+  color: var(--text-primary, #4a3f5c);
+  font-size: var(--font-size-sm, 13px);
+  line-height: var(--line-height-tight, 1.2);
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
@@ -284,29 +324,34 @@ body {
 }
 
 .close-button {
-  background: none;
+  background: var(--bg-secondary, rgba(156, 124, 181, 0.1));
   border: none;
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 13px;
+  color: var(--text-secondary, #7a6b8a);
+  font-size: var(--font-size-sm, 13px);
   cursor: pointer;
-  opacity: 0.9;
   flex-shrink: 0;
   padding: 0;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm, 6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast, 0.15s ease);
 }
 
 .close-button:hover {
-  opacity: 1;
+  background: var(--bg-tertiary, rgba(156, 124, 181, 0.2));
+  color: var(--text-primary, #4a3f5c);
 }
 
 /* 메시지 */
 .message {
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 11px;
-  line-height: 1.3;
+  color: var(--text-secondary, #7a6b8a);
+  font-size: var(--font-size-xs, 11px);
+  line-height: var(--line-height-normal, 1.4);
   max-height: 28px;
-  margin-bottom: 4px;
+  margin-bottom: var(--spacing-xs, 6px);
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -318,8 +363,8 @@ body {
 /* 프로그레스 바 */
 .progress-bar-container {
   height: 3px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px;
+  background: var(--border-light, rgba(156, 124, 181, 0.15));
+  border-radius: var(--radius-full, 9999px);
   overflow: hidden;
   width: 100%;
 }
@@ -330,7 +375,8 @@ body {
   transform-origin: left;
   transform: scaleX(1);
   transition: transform linear;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.08));
+  background: linear-gradient(90deg, var(--color-primary, #9c7cb5) 0%, var(--color-secondary, #d4a5c9) 100%);
+  border-radius: var(--radius-full, 9999px);
 }
 
 /* 애니메이션 상태 */

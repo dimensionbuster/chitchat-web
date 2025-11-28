@@ -49,6 +49,9 @@ onMounted(async () => {
 <template>
   <div class="dialog-page">
     <div ref="dialogContainerRef" class="dialog-container">
+      <div class="dialog-icon">
+        {{ type === 'confirm' ? '❓' : 'ℹ️' }}
+      </div>
       <div class="dialog-message">{{ message }}</div>
       <div class="dialog-buttons">
         <button v-if="type === 'confirm'" @click="handleCancel" class="button cancel-button">
@@ -67,7 +70,7 @@ onMounted(async () => {
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  background: white;
+  background: var(--bg-card-solid, #ffffff);
   padding: 0;
   margin: 0;
 }
@@ -75,40 +78,52 @@ onMounted(async () => {
 .dialog-container {
   width: 100%;
   height: 100%;
-  background: white;
-  border-radius: 8px;
-  padding: 24px;
+  background: var(--bg-modal, rgba(255, 255, 255, 0.98));
+  border-radius: var(--radius-lg, 14px);
+  padding: var(--spacing-xl, 24px);
   min-width: 280px;
   max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border: 1px solid var(--border-light, rgba(156, 124, 181, 0.15));
+}
+
+.dialog-icon {
+  font-size: 40px;
+  margin-bottom: var(--spacing-lg, 16px);
+  filter: drop-shadow(0 2px 4px rgba(156, 124, 181, 0.2));
 }
 
 .dialog-message {
-  font-size: 14px;
-  line-height: 1.5;
-  margin-bottom: 20px;
-  color: #333;
+  font-size: var(--font-size-base, 14px);
+  line-height: var(--line-height-relaxed, 1.7);
+  margin-bottom: var(--spacing-xl, 24px);
+  color: var(--text-primary, #4a3f5c);
   white-space: pre-wrap;
   word-break: break-word;
+  text-align: center;
 }
 
 .dialog-buttons {
   display: flex;
-  gap: 8px;
-  justify-content: flex-end;
+  gap: var(--spacing-sm, 8px);
+  justify-content: center;
+  width: 100%;
 }
 
 .button {
-  padding: 8px 20px;
-  border: none;
-  border-radius: 4px;
-  font-size: 14px;
-  font-weight: 500;
+  padding: var(--spacing-sm, 10px) var(--spacing-xl, 24px);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 10px);
+  font-size: var(--font-size-base, 14px);
+  font-weight: var(--font-weight-medium, 500);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-fast, 0.15s ease);
+  min-width: 80px;
 }
 
 .button:hover {
-  opacity: 0.9;
   transform: translateY(-1px);
 }
 
@@ -117,12 +132,24 @@ onMounted(async () => {
 }
 
 .confirm-button {
-  background: #0078d4;
-  color: white;
+  background: var(--gradient-primary, linear-gradient(135deg, #e8d5f2 0%, #f0d4e8 50%, #fce4ec 100%));
+  color: var(--text-on-gradient, #5c4a6e);
+  border-color: var(--border-default, rgba(156, 124, 181, 0.25));
+  box-shadow: var(--shadow-sm, 0 2px 8px rgba(156, 124, 181, 0.1));
+}
+
+.confirm-button:hover {
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(156, 124, 181, 0.15));
 }
 
 .cancel-button {
-  background: #e1e1e1;
-  color: #333;
+  background: var(--bg-secondary, #f5f0f8);
+  color: var(--text-secondary, #7a6b8a);
+  border-color: var(--border-default, rgba(156, 124, 181, 0.25));
+}
+
+.cancel-button:hover {
+  background: var(--bg-tertiary, #efe8f4);
+  color: var(--text-primary, #4a3f5c);
 }
 </style>

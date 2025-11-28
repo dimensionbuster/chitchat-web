@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'ProfilePictureUpload' })
 import { ref } from 'vue'
-import { showAlert, showConfirm } from '../composables/useCustomDialog'
+import { showAlert, showConfirm } from '@/composables/useCustomDialog'
 
 const props = defineProps<{
   currentImage: string | null
@@ -59,64 +59,68 @@ const handleDelete = async () => {
       </div>
     </div>
 
-    <div class="controls">
-      <button
-        @click="handleClick"
-        :disabled="disabled || isProcessing"
-        class="upload-button"
-      >
-        {{ isProcessing ? '처리 중...' : currentImage ? '사진 변경' : '사진 등록' }}
-      </button>
+    <div class="right-section">
+      <div class="controls">
+        <button
+          @click="handleClick"
+          :disabled="disabled || isProcessing"
+          class="upload-button"
+        >
+          {{ isProcessing ? '처리중' : currentImage ? '변경' : '등록' }}
+        </button>
 
-      <button
-        v-if="currentImage"
-        @click="handleDelete"
-        :disabled="disabled || isProcessing"
-        class="delete-button"
-      >
-        삭제
-      </button>
+        <button
+          v-if="currentImage"
+          @click="handleDelete"
+          :disabled="disabled || isProcessing"
+          class="delete-button"
+        >
+          삭제
+        </button>
 
-      <input
-        ref="fileInputRef"
-        type="file"
-        accept="image/*"
-        @change="handleFileChange"
-        :disabled="disabled || isProcessing"
-        style="display: none"
-      />
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept="image/*"
+          @change="handleFileChange"
+          :disabled="disabled || isProcessing"
+          style="display: none"
+        />
+      </div>
+
+      <p class="help-text">
+        정사각형 이미지 권장, 최대 50KB로 압축
+      </p>
     </div>
-
-    <p class="help-text">
-      권장: 정사각형 이미지, 최대 {{ Math.round(50) }}KB로 자동 압축됩니다.
-    </p>
   </div>
 </template>
 
 <style scoped>
 .profile-picture-upload {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xs);
 }
 
 .preview {
-  width: 120px;
-  height: 120px;
-  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-full);
   overflow: hidden;
-  border: 3px solid #ddd;
-  background: #f5f5f5;
+  border: 2px solid var(--border-default);
+  background: var(--bg-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
 }
 
 .preview.empty {
   border-style: dashed;
-  border-color: #ccc;
+  border-color: var(--border-light);
 }
 
 .profile-image {
@@ -134,32 +138,42 @@ const handleDelete = async () => {
 }
 
 .placeholder .icon {
-  font-size: 48px;
+  font-size: 28px;
   opacity: 0.3;
+}
+
+.right-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  flex: 1;
+  min-width: 0;
 }
 
 .controls {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-xs);
 }
 
 .upload-button,
 .delete-button {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 4px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 14px;
-  transition: opacity 0.2s;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  transition: all var(--transition-fast);
 }
 
 .upload-button {
-  background: #0078d4;
-  color: white;
+  background: var(--gradient-primary);
+  color: var(--text-on-gradient);
+  border-color: var(--border-default);
 }
 
 .upload-button:hover:not(:disabled) {
-  opacity: 0.9;
+  box-shadow: var(--shadow-sm);
 }
 
 .upload-button:disabled {
@@ -168,12 +182,13 @@ const handleDelete = async () => {
 }
 
 .delete-button {
-  background: #d13438;
-  color: white;
+  background: var(--btn-danger-bg);
+  color: var(--btn-danger-text);
+  border-color: var(--btn-danger-border);
 }
 
 .delete-button:hover:not(:disabled) {
-  opacity: 0.9;
+  box-shadow: var(--shadow-sm);
 }
 
 .delete-button:disabled {
@@ -182,9 +197,9 @@ const handleDelete = async () => {
 }
 
 .help-text {
-  font-size: 12px;
-  color: #666;
+  font-size: 10px;
+  color: var(--text-muted);
   margin: 0;
-  text-align: center;
+  line-height: 1.3;
 }
 </style>

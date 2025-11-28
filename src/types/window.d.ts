@@ -17,6 +17,13 @@ export interface ElectronApi {
   resizeAndShowDialog: (dialogId: string, width: number, height: number) => void
   // 외부 브라우저에서 링크 열기
   openExternal: (url: string) => void
+  // 배경 이미지 API
+  setBackgroundImage: (type: 'home' | 'chat' | 'notification', imageData: ArrayBuffer) => Promise<boolean>
+  getBackgroundImage: (type: 'home' | 'chat' | 'notification') => Promise<string | null>
+  removeBackgroundImage: (type: 'home' | 'chat' | 'notification') => Promise<boolean>
+  selectBackgroundImage: () => Promise<ArrayBuffer | null>
+  // 설정 창 API
+  openSettings: () => void
 }
 
 declare global {

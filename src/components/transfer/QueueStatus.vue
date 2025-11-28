@@ -211,49 +211,53 @@ function getPriorityLabel(priority: number): string {
   position: fixed;
   bottom: 20px;
   right: 20px;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
   min-width: 320px;
   max-width: 400px;
   z-index: 1000;
   overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border-light);
 }
 
 .queue-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: var(--spacing-md) var(--spacing-lg);
   cursor: pointer;
   user-select: none;
-  transition: background 0.2s;
+  transition: background var(--transition-fast);
 }
 
 .queue-header:hover {
-  background: rgba(0, 0, 0, 0.02);
+  background: var(--bg-secondary);
 }
 
 .queue-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 14px;
-  color: #333;
-  padding-right: 8px;
+  gap: var(--spacing-sm);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  padding-right: var(--spacing-sm);
+}
+
+.queue-title svg {
+  color: var(--color-primary);
 }
 
 .queue-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: #666;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
   margin-left: auto;
-  margin-right: 8px;
+  margin-right: var(--spacing-sm);
 }
 
 .summary-item {
@@ -263,39 +267,39 @@ function getPriorityLabel(priority: number): string {
 }
 
 .summary-label {
-  font-size: 11px;
-  color: #94a3b8;
-  font-weight: 500;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-weight: var(--font-weight-medium);
 }
 
 .active-count {
-  color: #2563eb;
-  font-weight: 600;
+  color: var(--color-primary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .queued-count {
-  color: #64748b;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .separator {
-  color: #cbd5e1;
+  color: var(--border-default);
   margin: 0 2px;
 }
 
 .speed {
-  margin-left: 8px;
+  margin-left: var(--spacing-sm);
   padding: 2px 8px;
-  background: #dbeafe;
-  color: #1e40af;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 500;
+  background: var(--gradient-primary);
+  color: var(--text-on-gradient);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
 }
 
 .expand-icon {
-  transition: transform 0.3s;
-  color: #94a3b8;
+  transition: transform var(--transition-normal);
+  color: var(--text-muted);
 }
 
 .expand-icon.expanded {
@@ -303,15 +307,15 @@ function getPriorityLabel(priority: number): string {
 }
 
 .queue-details {
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
-  padding: 16px;
+  border-top: 1px solid var(--border-light);
+  padding: var(--spacing-lg);
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
 }
 
 .stat-item {
@@ -319,48 +323,48 @@ function getPriorityLabel(priority: number): string {
 }
 
 .stat-label {
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
   margin-bottom: 4px;
 }
 
 .stat-value {
-  font-size: 18px;
-  font-weight: 700;
-  color: #1e293b;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
 }
 
 .stat-value.success {
-  color: #16a34a;
+  color: var(--color-success);
 }
 
 .stat-value.error {
-  color: #dc2626;
+  color: var(--color-error);
 }
 
 .transfer-stats {
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
 }
 
 .stat-row {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
   padding: 4px 0;
 }
 
 .stat-row .value {
-  font-weight: 600;
-  color: #334155;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .active-jobs,
 .queue-jobs {
-  margin-top: 16px;
+  margin-top: var(--spacing-lg);
 }
 
 .active-jobs:first-child,
@@ -369,55 +373,55 @@ function getPriorityLabel(priority: number): string {
 }
 
 .jobs-header {
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  margin-bottom: 8px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-sm);
 }
 
 .job-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  background: #f8fafc;
-  border-radius: 6px;
-  margin-bottom: 6px;
-  font-size: 12px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-xs);
+  font-size: var(--font-size-xs);
 }
 
 .job-item.active {
   flex-direction: column;
   align-items: stretch;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: rgba(var(--color-primary-rgb), 0.1);
+  border: 1px solid var(--color-primary-light);
 }
 
 .job-item.active.completed {
-  background: #f0fdf4;
-  border-color: #bbf7d0;
+  background: rgba(var(--color-success-rgb), 0.1);
+  border-color: var(--color-success);
 }
 
 .job-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 .job-item.active .job-info {
-  margin-bottom: 6px;
+  margin-bottom: var(--spacing-xs);
 }
 
 .job-type {
-  font-weight: 500;
-  color: #334155;
-  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
 }
 
 .job-name {
   flex: 1;
-  font-weight: 500;
-  color: #1e293b;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -425,13 +429,13 @@ function getPriorityLabel(priority: number): string {
 
 .job-progress-text {
   font-family: monospace;
-  font-size: 13px;
-  font-weight: 600;
-  color: #2563eb;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-primary);
 }
 
 .job-item.completed .job-progress-text {
-  color: #16a34a;
+  color: var(--color-success);
 }
 
 .job-details {
@@ -439,8 +443,8 @@ function getPriorityLabel(priority: number): string {
   justify-content: space-between;
   align-items: center;
   margin-top: 4px;
-  font-size: 11px;
-  color: #64748b;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
 }
 
 .chunk-info {
@@ -448,32 +452,32 @@ function getPriorityLabel(priority: number): string {
 }
 
 .job-size {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 /* 진행률 바 */
 .progress-bar-wrapper {
   height: 6px;
-  background: #e0e7ff;
-  border-radius: 3px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
   overflow: hidden;
 }
 
 .job-item.completed .progress-bar-wrapper {
-  background: #dcfce7;
+  background: rgba(var(--color-success-rgb), 0.2);
 }
 
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
-  border-radius: 3px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-full);
   transition: width 0.3s ease;
   position: relative;
   overflow: hidden;
 }
 
 .progress-bar-fill.completed {
-  background: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
+  background: linear-gradient(135deg, var(--color-success) 0%, #22c55e 100%);
 }
 
 .progress-bar-fill::after {
@@ -486,7 +490,7 @@ function getPriorityLabel(priority: number): string {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0.4) 50%,
     transparent 100%
   );
   animation: shimmer 2s infinite;
@@ -503,42 +507,42 @@ function getPriorityLabel(priority: number): string {
 
 .job-priority {
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 10px;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 .priority-0 {
-  background: #fee2e2;
-  color: #991b1b;
+  background: rgba(var(--color-error-rgb), 0.15);
+  color: var(--color-error);
 }
 
 .priority-1 {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
 }
 
 .priority-2 {
-  background: #dbeafe;
-  color: #1e40af;
+  background: rgba(var(--color-primary-rgb), 0.15);
+  color: var(--color-primary);
 }
 
 .priority-3 {
-  background: #e2e8f0;
-  color: #475569;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .more-jobs {
   text-align: center;
-  font-size: 11px;
-  color: #94a3b8;
-  padding: 8px 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  padding: var(--spacing-sm) 0;
 }
 
 /* 애니메이션 */
 .slide-enter-active,
 .slide-leave-active {
-  transition: all 0.3s ease;
+  transition: all var(--transition-normal);
   max-height: 600px;
   overflow: hidden;
 }
@@ -547,94 +551,6 @@ function getPriorityLabel(priority: number): string {
 .slide-leave-to {
   max-height: 0;
   opacity: 0;
-}
-
-/* 다크 모드 지원 */
-@media (prefers-color-scheme: dark) {
-  .queue-status {
-    background: rgba(30, 41, 59, 0.95);
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-
-  .queue-header:hover {
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .queue-title {
-    color: #e2e8f0;
-  }
-
-  .queue-summary {
-    color: #cbd5e1;
-  }
-
-  .speed {
-    background: #1e3a8a;
-    color: #93c5fd;
-  }
-
-  .queue-details {
-    border-top-color: rgba(255, 255, 255, 0.05);
-  }
-
-  .stat-value {
-    color: #e2e8f0;
-  }
-
-  .transfer-stats {
-    background: rgba(0, 0, 0, 0.2);
-  }
-
-  .stat-row {
-    color: #cbd5e1;
-  }
-
-  .stat-row .value {
-    color: #e2e8f0;
-  }
-
-  .job-item {
-    background: rgba(0, 0, 0, 0.2);
-  }
-
-  .job-item.active {
-    background: rgba(37, 99, 235, 0.15);
-    border-color: rgba(59, 130, 246, 0.3);
-  }
-
-  .job-item.active.completed {
-    background: rgba(22, 163, 74, 0.15);
-    border-color: rgba(34, 197, 94, 0.3);
-  }
-
-  .job-type,
-  .job-name {
-    color: #e2e8f0;
-  }
-
-  .job-progress-text {
-    color: #60a5fa;
-  }
-
-  .job-item.completed .job-progress-text {
-    color: #4ade80;
-  }
-
-  .progress-bar-wrapper {
-    background: rgba(0, 0, 0, 0.3);
-  }
-
-  .job-item.completed .progress-bar-wrapper {
-    background: rgba(0, 0, 0, 0.3);
-  }
-
-  .progress-bar-fill {
-    background: linear-gradient(90deg, #2563eb 0%, #3b82f6 100%);
-  }
-
-  .progress-bar-fill.completed {
-    background: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
-  }
 }
 
 /* 모바일 반응형 */
