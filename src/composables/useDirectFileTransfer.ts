@@ -14,8 +14,8 @@ const { saveChunksBatch } = useFileTransferState()
 
 const CHUNK_SIZE = 128 * 1024 // 128KB
 const MAX_BUFFER_SIZE = 8 * 1024 * 1024 // 8MB
-const FLOW_CONTROL_WINDOW = 100 // 100개 청크마다 ACK 대기 (25.6MB)
-const DB_SAVE_CHUNK_INTERVAL = 200 // 200개 청크마다 DB 저장 (50MB)
+const FLOW_CONTROL_WINDOW = 100 // 100개 청크마다 ACK 대기 (12.8MB)
+const DB_SAVE_CHUNK_INTERVAL = 10 // 10개 청크마다 DB 저장 (1.28MB) - 연결 끊김 시 손실 최소화
 const ACK_TIMEOUT = 5000 // ACK 대기 타임아웃 5초
 const BUFFER_WAIT_TIMEOUT = 30000 // 버퍼 대기 최대 30초
 
@@ -462,10 +462,11 @@ export function useDirectFileTransfer(
         sendResumeInfo() // 이미 열려있으면 즉시 전송
       }
 
-      // 청크 수신
+      // 청크 수신 (순서 무관)
       return new Promise<Blob>(async (resolve, reject) => {
-        const chunks = new Array<ArrayBuffer | null>(offer.totalChunks)
-        let currentIndex = -1
+        // 🔥 청크를 Map으로 관리 (순서와 무관하게 수신)
+        const receivedChunksMap = new Map<number, ArrayBuffer>()
+        let nextExpectedIndex: number | null = null // 다음 청크 인덱스 대기 (null이면 아직 수신 안함)
         let pendingSaveChunks = 0 // 저장되지 않은 청크 수
         const pendingChunksBuffer = new Map<number, ArrayBuffer>() // 배치 저장용 버퍼
         let isSaving = false // DB 저장 중 플래그
@@ -473,7 +474,7 @@ export function useDirectFileTransfer(
         // 기존에 받은 청크 복원
         if (partialState) {
           for (const [index, buffer] of partialState.chunks.entries()) {
-            chunks[index] = buffer
+            receivedChunksMap.set(index, buffer)
           }
         }
 
@@ -489,41 +490,67 @@ export function useDirectFileTransfer(
                 break
 
               case 'complete': {
-                // 모든 청크가 도착했는지 확인
-                if (!isDownloadComplete(partialState!)) {
-                  await saveDownloadState(partialState!)
-                  reject(new Error(`청크 누락: ${partialState!.receivedChunks.size}/${offer.totalChunks}`))
+                // 🔥 모든 청크가 도착했는지 확인 (receivedChunksMap 사용)
+                if (receivedChunksMap.size !== offer.totalChunks) {
+                  // 🔥 마지막 저장 시도 (논블로킹)
+                  if (pendingChunksBuffer.size > 0) {
+                    Promise.all([
+                      saveChunksBatch(offer.fileId, pendingChunksBuffer),
+                      saveDownloadState(partialState!)
+                    ]).catch(console.error)
+                  }
+                  reject(new Error(`청크 누락: ${receivedChunksMap.size}/${offer.totalChunks}`))
                   return
                 }
 
-                // Blob 생성
-                const validChunks = chunks.filter((c): c is ArrayBuffer => c !== null)
-                const blob = new Blob(validChunks, { type: meta?.type || 'application/octet-stream' })
-
                 const receiveElapsed = performance.now() - receiveStartTime
-                const speedMBps = (blob.size / 1024 / 1024) / (receiveElapsed / 1000)
-                console.log(`[#19] P2P 수신 완료: ${(blob.size / 1024 / 1024).toFixed(2)}MB - ${receiveElapsed.toFixed(0)}ms, ${speedMBps.toFixed(2)} MB/s`)
+                console.log(`[#19] P2P 수신 완료: ${receivedChunksMap.size}개 청크`)
 
-                // 캐시 저장 및 상태 삭제 (완료 시 최종 저장 보장)
-                try {
+                // 🔥 백그라운드에서 Blob 생성 및 저장 (논블로킹)
+                Promise.resolve().then(async () => {
+                  // 청크를 순서대로 정렬하여 Blob 생성
+                  const sortedChunks: ArrayBuffer[] = []
+                  for (let i = 0; i < offer.totalChunks; i++) {
+                    const chunk = receivedChunksMap.get(i)
+                    if (!chunk) {
+                      throw new Error(`청크 ${i}가 누락되었습니다`)
+                    }
+                    sortedChunks.push(chunk)
+                  }
+
+                  const blob = new Blob(sortedChunks, { type: meta?.type || 'application/octet-stream' })
+                  const speedMBps = (blob.size / 1024 / 1024) / (receiveElapsed / 1000)
+                  console.log(`[#19] Blob 생성 완료: ${(blob.size / 1024 / 1024).toFixed(2)}MB - ${receiveElapsed.toFixed(0)}ms, ${speedMBps.toFixed(2)} MB/s`)
+
+                  // 캐시 저장 및 상태 삭제 (백그라운드)
                   await cacheFile(offer.fileId, blob)
-                  // 완료 시 DB에서 삭제 (더 이상 이어받기 필요 없음)
                   await deleteDownloadState(offer.fileId)
+
                   completeTransfer(transferKey)
+                  console.log(`[#19] 캐시 저장 완료: ${offer.fileId}`)
+
+                  return blob
+                }).then((blob) => {
                   channel.close()
                   setTimeout(() => cleanup(connectionId), 1000)
                   resolve(blob)
-                } catch (error) {
+                }).catch((error) => {
+                  console.error('[#19] 완료 처리 실패:', error)
+                  channel.close()
+                  cleanup(connectionId)
                   reject(error)
-                }
+                })
+
                 break
               }
 
               case 'error':
-                // 에러 시 최종 저장 (이어받기 가능하도록)
+                // 🔥 에러 시 최종 저장 (논블로킹)
                 if (pendingChunksBuffer.size > 0) {
-                  await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-                  await saveDownloadState(partialState!)
+                  Promise.all([
+                    saveChunksBatch(offer.fileId, pendingChunksBuffer),
+                    saveDownloadState(partialState!)
+                  ]).catch(console.error)
                 }
                 channel.close()
                 cleanup(connectionId)
@@ -531,44 +558,45 @@ export function useDirectFileTransfer(
                 break
             }
           } else {
-            // ArrayBuffer - 청크 인덱스 또는 청크 데이터
+            // 🔥 ArrayBuffer - 청크 인덱스 또는 청크 데이터 (순서 무관 수신)
             const buffer = event.data as ArrayBuffer
 
             if (buffer.byteLength === 4) {
               // 4바이트면 청크 인덱스 (Uint32)
               const index = new Uint32Array(buffer)[0]
               if (index !== undefined) {
-                currentIndex = index
+                nextExpectedIndex = index
               }
             } else {
               // 그 외는 청크 데이터
               // Guard: 청크 인덱스 유효성 검증
-              if (currentIndex < 0 || currentIndex >= offer.totalChunks) {
-                console.warn(`[DirectTransfer] 잘못된 청크 인덱스: ${currentIndex}`)
+              if (nextExpectedIndex === null || nextExpectedIndex < 0 || nextExpectedIndex >= offer.totalChunks) {
+                console.warn(`[DirectTransfer] 잘못된 청크 인덱스: ${nextExpectedIndex}`)
+                nextExpectedIndex = null
                 return
               }
 
               // Guard: 이미 받은 청크는 건너뛰기
-              if (partialState!.receivedChunks.has(currentIndex)) {
+              if (receivedChunksMap.has(nextExpectedIndex)) {
+                nextExpectedIndex = null
                 return
               }
 
-              // 청크 저장 (메모리에만, DB 저장은 배치로)
-              chunks[currentIndex] = buffer
-              partialState!.receivedChunks.add(currentIndex)
-              partialState!.chunks.set(currentIndex, buffer)
+              // 🔥 청크 저장 (순서와 무관하게 Map에 저장)
+              receivedChunksMap.set(nextExpectedIndex, buffer)
+              partialState!.receivedChunks.add(nextExpectedIndex)
+              partialState!.chunks.set(nextExpectedIndex, buffer)
               partialState!.timestamp = Date.now()
 
               // 배치 버퍼에 추가
-              pendingChunksBuffer.set(currentIndex, buffer)
+              pendingChunksBuffer.set(nextExpectedIndex, buffer)
               pendingSaveChunks++
 
-              // Flow control: FLOW_CONTROL_WINDOW개 청크마다 ACK 전송 (비동기로 처리하여 블로킹 방지)
-              if (partialState!.receivedChunks.size % FLOW_CONTROL_WINDOW === 0) {
-                // 연속으로 받은 최대 인덱스 계산 (순서 보장을 위해)
+              // 🔥 Flow control: 받은 청크 중 최대 연속 인덱스 계산 (ACK용)
+              if (receivedChunksMap.size % FLOW_CONTROL_WINDOW === 0) {
                 let consecutiveIndex = -1
                 for (let idx = 0; idx < offer.totalChunks; idx++) {
-                  if (partialState!.receivedChunks.has(idx)) {
+                  if (receivedChunksMap.has(idx)) {
                     consecutiveIndex = idx
                   } else {
                     break // 첫 번째 빠진 청크에서 중단
@@ -585,7 +613,7 @@ export function useDirectFileTransfer(
                   if (channel.readyState === 'open') {
                     try {
                       channel.send(JSON.stringify(ackMsg))
-                      console.log(`[#20] ACK 전송: ${consecutiveIndex} (받은 청크: ${partialState!.receivedChunks.size})`)
+                      console.log(`[#20] ACK 전송: ${consecutiveIndex} (받은 청크: ${receivedChunksMap.size})`)
                     } catch (error) {
                       console.warn(`[#20] ACK 전송 실패:`, error)
                     }
@@ -596,8 +624,8 @@ export function useDirectFileTransfer(
               }
 
               // UI 업데이트 최적화: 100청크마다만 업데이트
-              const shouldUpdate = partialState!.receivedChunks.size % 100 === 0 || isDownloadComplete(partialState!)
-              updateProgress(transferKey, partialState!.receivedChunks.size, shouldUpdate)
+              const shouldUpdate = receivedChunksMap.size % 100 === 0 || receivedChunksMap.size === offer.totalChunks
+              updateProgress(transferKey, receivedChunksMap.size, shouldUpdate)
 
               // 배치 DB 저장 (DB_SAVE_CHUNK_INTERVAL개마다)
               if (pendingSaveChunks >= DB_SAVE_CHUNK_INTERVAL && !isSaving) {
@@ -627,34 +655,61 @@ export function useDirectFileTransfer(
 
               // 로그 최적화: 100청크마다만 출력
               if (shouldUpdate) {
-                console.log(`[#20] P2P 수신: ${partialState!.receivedChunks.size}/${offer.totalChunks} (${((partialState!.receivedChunks.size / offer.totalChunks) * 100).toFixed(0)}%)`)
+                console.log(`[#20] P2P 수신: ${receivedChunksMap.size}/${offer.totalChunks} (${((receivedChunksMap.size / offer.totalChunks) * 100).toFixed(0)}%)`)
               }
 
-              // 다음 청크 인덱스 대기
-              currentIndex = -1
+              // 다음 청크 인덱스 초기화
+              nextExpectedIndex = null
             }
           }
         }
 
-        channel.onerror = async (error) => {
-          // 에러 시 최종 저장 (이어받기 가능하도록)
-          if (pendingChunksBuffer.size > 0) {
-            await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-            await saveDownloadState(partialState!)
-          }
-          cleanup(connectionId)
-          reject(error)
+        channel.onerror = (error) => {
+          console.error('[#20] 채널 에러 감지 - 즉시 저장 시작')
+
+          // 🔥 에러 시 즉시 저장 (동기적으로 완료 대기)
+          const savePromise = Promise.all([
+            pendingChunksBuffer.size > 0 ? saveChunksBatch(offer.fileId, pendingChunksBuffer) : Promise.resolve(),
+            saveDownloadState(partialState!)
+          ])
+
+          savePromise
+            .then(() => {
+              console.log(`[#20] ✅ 에러 시 저장 완료: ${pendingChunksBuffer.size}개 청크`)
+              cleanup(connectionId)
+              reject(error)
+            })
+            .catch((saveErr) => {
+              console.error('[#20] ❌ 에러 시 저장 실패:', saveErr)
+              cleanup(connectionId)
+              reject(error)
+            })
         }
 
-        channel.onclose = async () => {
-          if (!isDownloadComplete(partialState!)) {
-            // 채널 종료 시 최종 저장 (이어받기 가능하도록)
-            if (pendingChunksBuffer.size > 0) {
-              await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-              await saveDownloadState(partialState!)
-            }
-            cleanup(connectionId)
-            reject(new Error('채널이 완료 전에 닫혔습니다'))
+        channel.onclose = () => {
+          console.log('[#20] 채널 닫힘 감지')
+
+          // 🔥 완료 검증: receivedChunksMap 사용
+          if (receivedChunksMap.size !== offer.totalChunks) {
+            console.warn(`[#20] 불완전 수신 감지: ${receivedChunksMap.size}/${offer.totalChunks} - 즉시 저장`)
+
+            // 🔥 채널 종료 시 즉시 저장 (동기적으로 완료 대기)
+            const savePromise = Promise.all([
+              pendingChunksBuffer.size > 0 ? saveChunksBatch(offer.fileId, pendingChunksBuffer) : Promise.resolve(),
+              saveDownloadState(partialState!)
+            ])
+
+            savePromise
+              .then(() => {
+                console.log(`[#20] ✅ 닫힘 시 저장 완료: ${pendingChunksBuffer.size}개 청크`)
+                cleanup(connectionId)
+                reject(new Error('채널이 완료 전에 닫혔습니다'))
+              })
+              .catch((saveErr) => {
+                console.error('[#20] ❌ 닫힘 시 저장 실패:', saveErr)
+                cleanup(connectionId)
+                reject(new Error('채널이 완료 전에 닫혔습니다'))
+              })
           }
         }
       })

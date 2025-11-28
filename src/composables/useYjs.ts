@@ -4,6 +4,8 @@ import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import type { ChatMessage, FileMeta } from '@/types/types'
 import { useFileTransferProgress } from './useFileTransferProgress'
+import { useInitialSync } from './useInitialSync.v3'
+import { useSignalingServer } from './useSignalingServer'
 
 const DEFAULT_VISIBLE_MESSAGES = 50
 const LOAD_MORE_COUNT = 30
@@ -17,6 +19,8 @@ const SIGNAL_URLS = (import.meta.env.VITE_SIGNAL_URLS || '')
   .split(',')
   .map((url: string) => url.trim())
   .filter(Boolean)
+
+const SIGNALING_SERVER_URL = import.meta.env.VITE_SIGNAL_URLS || 'wss://webrtc.chitchatdimension.com'
 
 const iceServers = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -38,7 +42,7 @@ const waitForSync = (provider: WebrtcProvider) =>
     provider.on('synced', (event: { synced: boolean }) => {
       if (event.synced) resolve()
     })
-    setTimeout(resolve, 1000) // 1초 타임아웃
+    setTimeout(resolve, 3000) // 3초 타임아웃
   })
 
 async function createYjsInstance(roomId: string) {
@@ -173,8 +177,8 @@ async function createYjsInstance(roomId: string) {
     })
   })
 
-  // WebRTC provider 시작 (백그라운드 동기화)
-  console.log('[#3] WebRTC Provider 생성 - 백그라운드 동기화 시작')
+  // WebRTC provider 생성 (초기에는 연결하지 않음 - 초기 동기화 후 connect 호출)
+  console.log('[#3] WebRTC Provider 생성')
   const provider = new WebrtcProvider(roomId, doc, {
     signaling: [SIGNAL_URLS],
     peerOpts: {
@@ -186,7 +190,8 @@ async function createYjsInstance(roomId: string) {
     },
   })
 
-  waitForSync(provider)
+  // 초기 연결 방지 - 초기 동기화 후 수동 connect
+  provider.disconnect()
 
   _setupProviderListeners(provider)
   _setupBackgroundConnectionMonitor(provider)
@@ -362,12 +367,81 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
   const instance = await instancePromise
   setUserAwareness(instance.provider, userUuid, nickname)
 
-  // Keepalive 시작 (userUuid가 있을 때만)
+  // 🔥 시그널링 서버를 통한 초기 동기화 (userUuid가 있을 때만)
   if (userUuid) {
-    _setupKeepalive(instance.provider)
-  }
+    // 시그널링 서버 연결
+    const signaling = useSignalingServer(SIGNALING_SERVER_URL)
+    await signaling.connect()
 
-  return instance
+    console.log('[#3-1] 시그널링 서버 연결됨')
+
+    // y-webrtc awareness만 연결 (doc sync 없이)
+    instance.provider.awareness.setLocalState({
+      userUuid,
+      user: { uuid: userUuid, nickname }
+    })
+
+    // 초기 동기화 composable 생성
+    const { requestInitialSync, initializeAsProvider } = useInitialSync(
+      signaling,
+      userUuid,
+      instance.doc,
+      roomId
+    )
+
+    // 🔥 항상 요청 리스너 등록 (새 접속자의 요청에 응답하기 위해)
+    initializeAsProvider()
+
+    // 🔥 doc이 비어있는지 확인 (새 접속자 판단)
+    const isNewUser = instance.messagesMap.size === 0
+
+    console.log(`[#3-2] 초기화 상태: ${isNewUser ? '신규 접속' : '기존 데이터 있음'} (메시지 ${instance.messagesMap.size}개)`)
+
+    if (isNewUser) {
+      // 🔥 신규 접속자: 시그널링 서버를 통해 초기 상태 요청
+      console.log('[#3-3] 초기 동기화 시작')
+
+      const snapshot = await requestInitialSync()
+
+      if (snapshot) {
+        // 스냅샷 적용
+        console.log(`[#3-4] 초기 스냅샷 적용 중... (${(snapshot.byteLength / 1024 / 1024).toFixed(2)}MB)`)
+        try {
+          const beforeSize = instance.messagesMap.size
+          Y.applyUpdate(instance.doc, snapshot)
+          const afterSize = instance.messagesMap.size
+          const addedMessages = afterSize - beforeSize
+
+          console.log(`[#3-5] ✅ 초기 스냅샷 적용 완료!`)
+          console.log(`  - 이전 메시지: ${beforeSize}개`)
+          console.log(`  - 현재 메시지: ${afterSize}개`)
+          console.log(`  - 추가된 메시지: ${addedMessages}개`)
+
+          // 적용 후 UI 업데이트 대기
+          await new Promise(resolve => setTimeout(resolve, 100))
+        } catch (error) {
+          console.error('[#3-5] ❌ 초기 스냅샷 적용 실패:', error)
+        }
+      } else {
+        console.log('[#3-4] 초기 스냅샷 없음 - 빈 채팅방')
+      }
+
+      // 🔥 초기 상태 받은 후 y-webrtc 연결 (증분 동기화용)
+      console.log('[#3-6] y-webrtc 연결 시작 (증분 동기화)')
+      instance.provider.connect()
+    } else {
+      // 🔥 기존 사용자: y-webrtc 증분 동기화
+      console.log('[#3-3] 기존 데이터 있음 - y-webrtc 증분 동기화 시작')
+      instance.provider.connect()
+    }
+
+    // Keepalive 시작
+    _setupKeepalive(instance.provider)
+
+    // y-webrtc 동기화 대기
+    console.log('[#3-7] y-webrtc 동기화 대기')
+    await waitForSync(instance.provider)
+  }  return instance
 }
 
 // ========== 헬퍼 함수들 ==========

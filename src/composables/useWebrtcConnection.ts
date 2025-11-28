@@ -51,6 +51,36 @@ export type FileTransferCancel = {
   timestamp: number
 }
 
+/**
+ * 초기 상태 동기화를 위한 시그널링 메시지 타입
+ */
+export type InitialSyncRequest = {
+  requesterUuid: string
+  timestamp: number
+}
+
+export type InitialSyncOffer = {
+  senderUuid: string
+  targetUuid: string
+  snapshotSize: number
+  sdp: RTCSessionDescriptionInit
+  timestamp: number
+}
+
+export type InitialSyncAnswer = {
+  receiverUuid: string
+  targetUuid: string
+  sdp: RTCSessionDescriptionInit
+  timestamp: number
+}
+
+export type InitialSyncIce = {
+  fromUuid: string
+  toUuid: string
+  candidate: RTCIceCandidateInit
+  timestamp: number
+}
+
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'turn:turn.gongbbu.com:3478', username: 'gongbbu', credential: 'gongbbu' },
