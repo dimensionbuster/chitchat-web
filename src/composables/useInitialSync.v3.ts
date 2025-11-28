@@ -335,16 +335,16 @@ export function useInitialSync(
     console.log('[InitialSync] 요청 메시지 발행:', syncTopic)
     signaling.publish(syncTopic, request as unknown as Record<string, unknown>)
 
-    // Offer 대기 (10초)
+    // Offer 대기 (5초 - 빈 채팅방일 경우 빠르게 시작)
     return new Promise<Uint8Array | null>((resolve, reject) => {
       syncResolve = resolve
       syncReject = reject
 
       setTimeout(() => {
-        console.warn('[InitialSync] Offer 타임아웃')
+        console.log('[InitialSync] Offer 타임아웃 - 빈 채팅방으로 시작')
         cleanup()
         resolve(null)
-      }, 10000)
+      }, 5000)
     })
   }
 

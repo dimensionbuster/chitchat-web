@@ -450,7 +450,9 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
     // y-webrtc 동기화 대기
     console.log('[#3-7] y-webrtc 동기화 대기')
     await waitForSync(instance.provider)
-  }  return instance
+  }
+
+  return instance
 }
 
 // ========== 헬퍼 함수들 ==========
