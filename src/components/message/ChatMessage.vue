@@ -156,13 +156,14 @@ const showOnlyMessage = computed(() => {
 
 .author {
   font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+  color: var(--color-secondary);
 }
 
 .timestamp {
-  color: var(--text-muted);
+  color: var(--color-accent);
   font-size: var(--font-size-xs);
   font-family: var(--font-family-mono);
+  opacity: 0.8;
 }
 
 .message-text {
@@ -174,12 +175,14 @@ const showOnlyMessage = computed(() => {
 }
 
 .message-text :deep(.message-link) {
-  color: var(--text-link);
-  text-decoration: underline;
-  transition: color var(--transition-fast);
+  color: var(--color-primary);
+  text-decoration: none;
+  border-bottom: 1px solid var(--color-accent);
+  transition: all var(--transition-fast);
 }
 
 .message-text :deep(.message-link:hover) {
-  color: var(--text-link-hover);
+  color: var(--color-accent);
+  border-bottom-color: var(--color-secondary);
 }
 </style>

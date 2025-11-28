@@ -163,7 +163,7 @@ onMounted(async () => {
 .background-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, var(--bg-overlay-opacity-home, 0.75));
+  background: rgba(var(--bg-primary-rgb, 255, 255, 255), var(--bg-overlay-opacity-home, 0.75));
   pointer-events: none;
 }
 
@@ -175,7 +175,7 @@ onMounted(async () => {
 }
 
 .home-card {
-  background: rgba(255, 255, 255, var(--container-opacity-home, 0.85));
+  background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-xl);
   padding: var(--spacing-lg);
@@ -199,14 +199,17 @@ onMounted(async () => {
   margin: 0;
   font-size: var(--font-size-2xl);
   font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
   letter-spacing: var(--letter-spacing-tight);
 }
 
 .app-subtitle {
   margin: 2px 0 0;
   font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  color: var(--color-accent);
   font-weight: var(--font-weight-medium);
 }
 
@@ -216,13 +219,14 @@ onMounted(async () => {
   padding: var(--spacing-sm);
   background: var(--bg-secondary);
   border-radius: var(--radius-md);
+  border: 1px solid var(--color-accent);
 }
 
 .section-title {
   margin: 0 0 var(--spacing-xs);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
-  color: var(--text-secondary);
+  color: var(--color-secondary);
   text-transform: uppercase;
   letter-spacing: var(--letter-spacing-wide);
 }
@@ -262,8 +266,9 @@ onMounted(async () => {
 
 .text-input:focus {
   outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-accent-light);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.15);
+  background: var(--bg-primary);
 }
 
 .enter-button {
@@ -272,19 +277,21 @@ onMounted(async () => {
   justify-content: center;
   gap: var(--spacing-sm);
   padding: var(--spacing-sm) var(--spacing-lg);
-  background: var(--gradient-primary);
-  color: var(--text-on-gradient);
-  border: 1px solid var(--border-default);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  color: white;
+  border: none;
   border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
   transition: all var(--transition-fast);
   margin-top: var(--spacing-xs);
+  box-shadow: 0 4px 12px rgba(var(--color-primary-rgb), 0.3);
 }
 
 .enter-button:hover {
-  box-shadow: var(--shadow-md);
+  background: linear-gradient(135deg, var(--color-secondary) 0%, var(--color-accent) 100%);
+  box-shadow: 0 6px 20px rgba(var(--color-primary-rgb), 0.4);
   transform: translateY(-2px);
 }
 
@@ -307,8 +314,8 @@ onMounted(async () => {
   width: 100%;
   padding: var(--spacing-sm) var(--spacing-md);
   background: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  color: var(--color-accent);
+  border: 1px dashed var(--color-primary-light);
   border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
@@ -317,9 +324,10 @@ onMounted(async () => {
 }
 
 .settings-button:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border-color: var(--color-primary-light);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-color: var(--color-secondary);
+  border-style: solid;
 }
 
 .settings-button svg {

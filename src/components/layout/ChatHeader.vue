@@ -86,7 +86,7 @@ const toggleUserList = () => {
   align-items: center;
   margin-bottom: var(--spacing-md);
   padding: var(--spacing-md) var(--spacing-lg);
-  background: rgba(255, 255, 255, var(--container-opacity-chat, 0.85));
+  background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
   backdrop-filter: blur(10px);
@@ -105,7 +105,7 @@ const toggleUserList = () => {
   margin: 0;
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+  color: var(--color-secondary);
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
@@ -120,18 +120,20 @@ const toggleUserList = () => {
   align-items: center;
   gap: var(--spacing-xs);
   padding: var(--spacing-xs) var(--spacing-md);
-  background: var(--gradient-primary);
-  color: var(--text-on-gradient);
-  border: 1px solid var(--border-default);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  color: white;
+  border: none;
   border-radius: var(--radius-full);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
   transition: all var(--transition-fast);
+  box-shadow: 0 2px 8px rgba(var(--color-primary-rgb), 0.3);
 }
 
 .user-count-btn:hover {
-  box-shadow: var(--shadow-md);
+  background: linear-gradient(135deg, var(--color-secondary) 0%, var(--color-primary) 100%);
+  box-shadow: 0 4px 16px rgba(var(--color-primary-rgb), 0.4);
   transform: scale(1.05);
 }
 
@@ -142,6 +144,7 @@ const toggleUserList = () => {
 .user-count {
   min-width: 16px;
   text-align: center;
+  color: white;
 }
 
 .user-list-popup {
@@ -164,15 +167,15 @@ const toggleUserList = () => {
   justify-content: space-between;
   align-items: center;
   padding: var(--spacing-md) var(--spacing-lg);
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--bg-secondary) 100%);
+  border-bottom: 1px solid var(--color-accent);
 }
 
 .user-list-header h3 {
   margin: 0;
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+  color: var(--color-secondary);
 }
 
 .close-btn {
@@ -215,7 +218,7 @@ const toggleUserList = () => {
 }
 
 .user-item:hover {
-  background: var(--bg-secondary);
+  background: rgba(var(--color-primary-rgb), 0.08);
 }
 
 .user-info {

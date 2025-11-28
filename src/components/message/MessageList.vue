@@ -138,7 +138,7 @@ defineExpose({ scrollToBottom })
   flex-direction: column;
   gap: 0;
   overflow-y: auto;
-  background: rgba(255, 255, 255, var(--container-opacity-chat, 0.85));
+  background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
   backdrop-filter: blur(10px);
@@ -153,8 +153,19 @@ defineExpose({ scrollToBottom })
 }
 
 .loading-message {
-  color: var(--color-primary);
+  color: var(--color-secondary);
   font-weight: var(--font-weight-medium);
+  background: linear-gradient(90deg, var(--color-primary-light), var(--color-accent), var(--color-primary-light));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
 .scroll-to-bottom-btn {
@@ -164,10 +175,10 @@ defineExpose({ scrollToBottom })
   width: 48px;
   height: 48px;
   border-radius: var(--radius-full);
-  background: var(--gradient-primary);
-  color: var(--text-on-gradient);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-lg);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  color: white;
+  border: none;
+  box-shadow: 0 4px 16px rgba(var(--color-primary-rgb), 0.4);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -178,7 +189,8 @@ defineExpose({ scrollToBottom })
 
 .scroll-to-bottom-btn:hover {
   transform: translateY(-2px);
-  box-shadow: var(--shadow-xl);
+  background: linear-gradient(135deg, var(--color-secondary) 0%, var(--color-primary) 100%);
+  box-shadow: 0 6px 24px rgba(var(--color-primary-rgb), 0.5);
 }
 
 .scroll-to-bottom-btn:active {

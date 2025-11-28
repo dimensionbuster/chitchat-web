@@ -9,6 +9,7 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { getElectronApi } from '@/util/platform'
 import { useBackgroundImage } from '@/composables/useBackgroundImage'
+import { useStyleSettings } from '@/composables/useStyleSettings'
 
 defineOptions({ name: 'NotificationPage' })
 
@@ -33,6 +34,9 @@ const animationState = ref<'entering' | 'shown' | 'hiding' | ''>('')
 
 // 배경 이미지
 const { currentBackground } = useBackgroundImage('notification')
+
+// 스타일 설정 (실시간 CSS 변수 업데이트)
+const { initialize: initStyleSettings } = useStyleSettings()
 
 const backgroundStyle = computed(() => {
   if (currentBackground.value) {
@@ -186,7 +190,10 @@ function resumeAutoClose(): void {
   scheduleAutoClose(remainingTime)
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 스타일 설정 먼저 로드
+  await initStyleSettings()
+  // 그 다음 알림 표시
   showNotification()
 })
 
@@ -260,7 +267,7 @@ body {
 .notification-bg-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, var(--bg-overlay-opacity-notification, 0.6));
+  background: rgba(var(--bg-primary-rgb, 255, 255, 255), var(--bg-overlay-opacity-notification, 0.6));
   pointer-events: none;
   z-index: 0;
 }
@@ -289,8 +296,8 @@ body {
   align-items: center;
   justify-content: center;
   font-size: 22px;
-  background: linear-gradient(135deg, var(--color-primary-light, #d4c4e0) 0%, var(--color-secondary-light, #f5e6f0) 100%);
-  box-shadow: var(--shadow-sm, 0 2px 8px rgba(156, 124, 181, 0.15));
+  background: linear-gradient(135deg, var(--color-primary, #9c7cb5) 0%, var(--color-accent, #b8a5d4) 100%);
+  box-shadow: 0 4px 12px rgba(var(--color-primary-rgb, 156, 124, 181), 0.3);
 }
 
 /* 콘텐츠 영역 */
@@ -314,7 +321,7 @@ body {
 
 .title {
   font-weight: var(--font-weight-semibold, 600);
-  color: var(--text-primary, #4a3f5c);
+  color: var(--color-secondary, #d4a5c9);
   font-size: var(--font-size-sm, 13px);
   line-height: var(--line-height-tight, 1.2);
   white-space: nowrap;
@@ -324,9 +331,9 @@ body {
 }
 
 .close-button {
-  background: var(--bg-secondary, rgba(156, 124, 181, 0.1));
+  background: rgba(var(--color-primary-rgb, 156, 124, 181), 0.15);
   border: none;
-  color: var(--text-secondary, #7a6b8a);
+  color: var(--color-accent, #b8a5d4);
   font-size: var(--font-size-sm, 13px);
   cursor: pointer;
   flex-shrink: 0;
@@ -341,8 +348,8 @@ body {
 }
 
 .close-button:hover {
-  background: var(--bg-tertiary, rgba(156, 124, 181, 0.2));
-  color: var(--text-primary, #4a3f5c);
+  background: var(--color-primary, #9c7cb5);
+  color: white;
 }
 
 /* 메시지 */
@@ -375,7 +382,7 @@ body {
   transform-origin: left;
   transform: scaleX(1);
   transition: transform linear;
-  background: linear-gradient(90deg, var(--color-primary, #9c7cb5) 0%, var(--color-secondary, #d4a5c9) 100%);
+  background: linear-gradient(90deg, var(--color-accent, #b8a5d4) 0%, var(--color-primary, #9c7cb5) 50%, var(--color-secondary, #d4a5c9) 100%);
   border-radius: var(--radius-full, 9999px);
 }
 

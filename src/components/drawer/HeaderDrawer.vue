@@ -166,6 +166,7 @@ const handleOpenSettings = () => {
 .hamburger-icon {
   font-size: var(--font-size-xl);
   line-height: 1;
+  color: var(--text-secondary);
 }
 </style>
 
@@ -189,12 +190,12 @@ const handleOpenSettings = () => {
   width: 320px;
   max-width: 85vw;
   height: 100vh;
-  background: #ffffff;
+  background: var(--bg-primary, #ffffff);
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
   z-index: 9999;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid rgba(156, 124, 181, 0.15);
+  border-left: 1px solid var(--border-light, rgba(156, 124, 181, 0.15));
 }
 
 /* Electron 환경에서 타이틀바 높이만큼 상단 여백 추가 */
@@ -208,8 +209,8 @@ const handleOpenSettings = () => {
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
-  border-bottom: 1px solid rgba(156, 124, 181, 0.15);
-  background: linear-gradient(135deg, #f5f0f8 0%, #faf8fc 100%);
+  border-bottom: 1px solid var(--border-light, rgba(156, 124, 181, 0.15));
+  background: var(--bg-secondary, linear-gradient(135deg, #f5f0f8 0%, #faf8fc 100%));
   flex-shrink: 0;
 }
 
@@ -217,15 +218,15 @@ const handleOpenSettings = () => {
   margin: 0;
   font-size: 17px;
   font-weight: 600;
-  color: #4a3f5c;
+  color: var(--text-primary, #4a3f5c);
 }
 
 .drawer-menu .close-btn {
-  background: #ffffff;
-  border: 1px solid rgba(156, 124, 181, 0.15);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-light, rgba(156, 124, 181, 0.15));
   font-size: 18px;
   cursor: pointer;
-  color: #7a6b8a;
+  color: var(--text-secondary, #7a6b8a);
   padding: 0;
   width: 32px;
   height: 32px;
@@ -237,8 +238,8 @@ const handleOpenSettings = () => {
 }
 
 .drawer-menu .close-btn:hover {
-  background: #efe8f4;
-  color: #4a3f5c;
+  background: var(--bg-tertiary, #efe8f4);
+  color: var(--text-primary, #4a3f5c);
 }
 
 .drawer-content {
@@ -255,7 +256,7 @@ const handleOpenSettings = () => {
   padding: 12px 16px 8px;
   font-size: 11px;
   font-weight: 600;
-  color: #b8adc4;
+  color: var(--text-muted, #b8adc4);
   text-transform: uppercase;
   letter-spacing: 0.02em;
 }
@@ -272,23 +273,23 @@ const handleOpenSettings = () => {
   transition: all 0.15s ease;
   text-align: left;
   font-size: 14px;
-  color: #4a3f5c;
+  color: var(--text-primary, #4a3f5c);
 }
 
 .menu-item:hover {
-  background: #f5f0f8;
+  background: var(--bg-secondary, #f5f0f8);
 }
 
 .menu-item:active {
-  background: #efe8f4;
+  background: var(--bg-tertiary, #efe8f4);
 }
 
 .menu-item-danger {
-  color: #c47a7a;
+  color: var(--color-error, #c47a7a);
 }
 
 .menu-item-danger:hover {
-  background: #f8eeee;
+  background: var(--color-error-bg, #f8eeee);
 }
 
 .menu-icon {

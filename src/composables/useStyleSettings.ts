@@ -5,6 +5,12 @@
  * - BroadcastChannel을 통한 창 간 실시간 동기화
  */
 import { ref, onMounted, onUnmounted } from 'vue'
+import { COLOR_TEMPLATES, DEFAULT_COLORS } from './colorTemplates'
+import type { ColorTemplate } from './colorTemplates'
+
+// Re-export for convenience
+export { COLOR_TEMPLATES, DEFAULT_COLORS }
+export type { ColorTemplate }
 
 // 디바운스 유틸리티
 function debounce<T extends (...args: never[]) => void>(fn: T, delay: number): (...args: Parameters<T>) => void {
@@ -51,180 +57,6 @@ export interface StyleSettings {
   // 색상 설정
   colors: ColorSettings
 }
-
-// 기본 색상값 (Milkyway - 기본)
-const DEFAULT_COLORS: ColorSettings = {
-  gradientStart: '#e8d5f2',
-  gradientMid: '#f0d4e8',
-  gradientEnd: '#fce4ec',
-  colorPrimary: '#9c7cb5',
-  colorPrimaryHover: '#8b6aa3',
-  colorPrimaryLight: '#d4c4e0',
-  colorSecondary: '#d4a5c9',
-  colorAccent: '#b8a5d4',
-  bgPrimary: '#faf8fc',
-  bgSecondary: '#f5f0f8',
-  textPrimary: '#4a3f5c',
-  textSecondary: '#7a6b8a',
-  textMuted: '#b8adc4'
-}
-
-// 색상 템플릿 정의
-export interface ColorTemplate {
-  id: string
-  name: string
-  description: string
-  colors: ColorSettings
-}
-
-export const COLOR_TEMPLATES: ColorTemplate[] = [
-  {
-    id: 'milkyway',
-    name: '🌌 Milkyway',
-    description: '부드러운 파스텔 보라-핑크 그라데이션',
-    colors: { ...DEFAULT_COLORS }
-  },
-  {
-    id: 'galaxy',
-    name: '🌙 Galaxy',
-    description: '어두운 파스텔톤의 나이트 모드',
-    colors: {
-      gradientStart: '#2d2640',
-      gradientMid: '#3d3154',
-      gradientEnd: '#4a3d5c',
-      colorPrimary: '#9d8ec2',
-      colorPrimaryHover: '#8a7bb0',
-      colorPrimaryLight: '#5c4f73',
-      colorSecondary: '#b794c9',
-      colorAccent: '#7eb8c9',
-      bgPrimary: '#1e1a26',
-      bgSecondary: '#2a2533',
-      textPrimary: '#e8e4f0',
-      textSecondary: '#b8b0c8',
-      textMuted: '#7a7290'
-    }
-  },
-  {
-    id: 'redwine',
-    name: '🍷 Red Wine',
-    description: '우아한 와인 레드 톤',
-    colors: {
-      gradientStart: '#f2d5d8',
-      gradientMid: '#e8c4c9',
-      gradientEnd: '#f5e0e3',
-      colorPrimary: '#a64d5e',
-      colorPrimaryHover: '#8f3d4d',
-      colorPrimaryLight: '#e0c4c9',
-      colorSecondary: '#c98a94',
-      colorAccent: '#d4a5a5',
-      bgPrimary: '#fcf8f8',
-      bgSecondary: '#f8f0f1',
-      textPrimary: '#5c3a40',
-      textSecondary: '#8a6a70',
-      textMuted: '#c4adb0'
-    }
-  },
-  {
-    id: 'popsicle',
-    name: '🍭 Popsicle',
-    description: '톡톡 튀는 비비드 컬러',
-    colors: {
-      gradientStart: '#ffd6e8',
-      gradientMid: '#c8f0ff',
-      gradientEnd: '#fff0c8',
-      colorPrimary: '#ff6b9d',
-      colorPrimaryHover: '#e85a8a',
-      colorPrimaryLight: '#ffb8d0',
-      colorSecondary: '#4ecdc4',
-      colorAccent: '#ffe66d',
-      bgPrimary: '#fffbfc',
-      bgSecondary: '#fff5f8',
-      textPrimary: '#4a3545',
-      textSecondary: '#7a6575',
-      textMuted: '#b8a8b4'
-    }
-  },
-  {
-    id: 'applejack',
-    name: '🍎 Applejack',
-    description: '사과 과수원의 따뜻한 오렌지 톤',
-    colors: {
-      gradientStart: '#ffe8d5',
-      gradientMid: '#ffd4b8',
-      gradientEnd: '#fff0e0',
-      colorPrimary: '#e07830',
-      colorPrimaryHover: '#c86820',
-      colorPrimaryLight: '#f5d4b8',
-      colorSecondary: '#7cb342',
-      colorAccent: '#d32f2f',
-      bgPrimary: '#fffcf8',
-      bgSecondary: '#fff8f0',
-      textPrimary: '#5c4030',
-      textSecondary: '#8a7060',
-      textMuted: '#c4b0a0'
-    }
-  },
-  {
-    id: 'mint',
-    name: '🌿 Mint Fresh',
-    description: '상쾌한 민트 그린 테마',
-    colors: {
-      gradientStart: '#d5f2e8',
-      gradientMid: '#c4e8dc',
-      gradientEnd: '#e0f5f0',
-      colorPrimary: '#4db6ac',
-      colorPrimaryHover: '#3d9e94',
-      colorPrimaryLight: '#b2dfdb',
-      colorSecondary: '#80cbc4',
-      colorAccent: '#a5d6d0',
-      bgPrimary: '#f8fcfb',
-      bgSecondary: '#f0f8f6',
-      textPrimary: '#2e4a45',
-      textSecondary: '#5a7a74',
-      textMuted: '#a0c4bc'
-    }
-  },
-  {
-    id: 'sakura',
-    name: '🌸 Sakura',
-    description: '벚꽃이 흩날리는 봄날',
-    colors: {
-      gradientStart: '#ffeef2',
-      gradientMid: '#ffd9e4',
-      gradientEnd: '#fff5f7',
-      colorPrimary: '#e91e63',
-      colorPrimaryHover: '#c2185b',
-      colorPrimaryLight: '#f8bbd9',
-      colorSecondary: '#f06292',
-      colorAccent: '#ff80ab',
-      bgPrimary: '#fffbfc',
-      bgSecondary: '#fff0f4',
-      textPrimary: '#4a2c36',
-      textSecondary: '#7a5a66',
-      textMuted: '#c4a0ac'
-    }
-  },
-  {
-    id: 'ocean',
-    name: '🌊 Ocean Blue',
-    description: '깊고 고요한 바다의 블루',
-    colors: {
-      gradientStart: '#d5e8f2',
-      gradientMid: '#c4dce8',
-      gradientEnd: '#e0f0f5',
-      colorPrimary: '#1976d2',
-      colorPrimaryHover: '#1565c0',
-      colorPrimaryLight: '#bbdefb',
-      colorSecondary: '#42a5f5',
-      colorAccent: '#64b5f6',
-      bgPrimary: '#f8fbfc',
-      bgSecondary: '#f0f6f8',
-      textPrimary: '#1a3a52',
-      textSecondary: '#4a6a82',
-      textMuted: '#90b0c4'
-    }
-  }
-]
 
 // 기본 설정값
 const DEFAULT_SETTINGS: StyleSettings = {
@@ -284,7 +116,47 @@ function applyCSSVariables(s: StyleSettings) {
     root.style.setProperty('--text-muted', s.colors.textMuted)
     // RGB 값도 업데이트 (rgba 사용을 위해)
     root.style.setProperty('--color-primary-rgb', hexToRgb(s.colors.colorPrimary))
+
+    // 파생 색상들 (기존 변수들과 호환성 유지)
+    root.style.setProperty('--bg-tertiary', adjustBrightness(s.colors.bgSecondary, -5))
+    // bg-card: 투명도 적용된 카드 배경 (배경 이미지가 비쳐보임)
+    root.style.setProperty('--bg-card', `rgba(${hexToRgb(s.colors.bgPrimary)}, var(--container-opacity-chat, 0.85))`)
+    // bg-card-solid: 완전 불투명 카드 배경 (팝업, 드롭다운 등)
+    root.style.setProperty('--bg-card-solid', s.colors.bgPrimary)
+    root.style.setProperty('--bg-input', s.colors.bgPrimary)
+    root.style.setProperty('--text-tertiary', s.colors.textMuted)
+    root.style.setProperty('--border-light', `rgba(${hexToRgb(s.colors.colorPrimary)}, 0.15)`)
+    root.style.setProperty('--border-default', `rgba(${hexToRgb(s.colors.colorPrimary)}, 0.25)`)
+    // 오버레이용 RGB 값 (다크모드 대응)
+    root.style.setProperty('--bg-primary-rgb', hexToRgb(s.colors.bgPrimary))
+
+    // 알림창 전용 변수
+    root.style.setProperty('--notification-bg', `linear-gradient(135deg, ${addAlpha(s.colors.gradientStart, 0.95)} 0%, ${addAlpha(s.colors.gradientEnd, 0.95)} 100%)`)
+    root.style.setProperty('--notification-border', `rgba(${hexToRgb(s.colors.colorPrimary)}, 0.3)`)
+    root.style.setProperty('--color-secondary-light', adjustBrightness(s.colors.colorSecondary, 30))
   }
+}
+
+// HEX 색상에 알파값 추가
+function addAlpha(hex: string, alpha: number): string {
+  const rgb = hexToRgb(hex)
+  return `rgba(${rgb}, ${alpha})`
+}
+
+// HEX 밝기 조절 함수
+function adjustBrightness(hex: string, percent: number): string {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+  if (!result || !result[1] || !result[2] || !result[3]) return hex
+
+  let r = parseInt(result[1], 16)
+  let g = parseInt(result[2], 16)
+  let b = parseInt(result[3], 16)
+
+  r = Math.max(0, Math.min(255, r + Math.round(r * percent / 100)))
+  g = Math.max(0, Math.min(255, g + Math.round(g * percent / 100)))
+  b = Math.max(0, Math.min(255, b + Math.round(b * percent / 100)))
+
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
 }
 
 // HEX to RGB 변환 함수

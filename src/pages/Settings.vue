@@ -214,7 +214,8 @@ function handleImport() {
       const text = await file.text()
       const success = importSettings(text)
       if (!success) {
-        alert('설정 파일을 불러오는데 실패했습니다. 올바른 형식인지 확인해주세요.')
+        // alert('설정 파일을 불러오는데 실패했습니다. 올바른 형식인지 확인해주세요.')
+        await window.electronApi?.showDialog('설정 파일을 불러오는데 실패했습니다. 올바른 형식인지 확인해주세요.')
       }
     }
   }
@@ -440,15 +441,17 @@ onMounted(async () => {
 
 <style scoped>
 .settings-page {
-  min-height: 100vh;
+  height: calc(100vh - 32px);
   background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
   padding: 1rem;
+  overflow-y: auto;
 }
 
 .settings-container {
   max-width: 700px;
+  width: 100%;
   margin: 0 auto;
-  background: rgba(255, 255, 255, var(--container-opacity, 0.85));
+  background: var(--bg-card);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
@@ -460,7 +463,7 @@ onMounted(async () => {
   align-items: center;
   padding: 1rem 1.5rem;
   background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
-  color: white;
+  color: var(--text-on-gradient, white);
 }
 
 .settings-header h1 {
@@ -473,8 +476,8 @@ onMounted(async () => {
   width: 32px;
   height: 32px;
   border: none;
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
+  background: rgba(var(--bg-primary-rgb, 255, 255, 255), 0.2);
+  color: var(--text-on-gradient, white);
   border-radius: 50%;
   cursor: pointer;
   display: flex;
@@ -484,7 +487,7 @@ onMounted(async () => {
 }
 
 .close-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(var(--bg-primary-rgb, 255, 255, 255), 0.3);
 }
 
 .settings-content {
@@ -516,10 +519,10 @@ onMounted(async () => {
 }
 
 .background-card {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--bg-secondary);
   border-radius: var(--radius-md);
   padding: 0.75rem;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--border-light);
 }
 
 .background-card h3 {
@@ -613,10 +616,10 @@ onMounted(async () => {
 }
 
 .opacity-group {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--bg-secondary);
   border-radius: var(--radius-md);
   padding: 1rem;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--border-light);
 }
 
 .opacity-header {
@@ -715,7 +718,7 @@ onMounted(async () => {
 }
 
 .template-card {
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--bg-secondary);
   border: 2px solid transparent;
   border-radius: var(--radius-md);
   padding: 0.5rem;
@@ -778,7 +781,7 @@ onMounted(async () => {
   padding: 0.6rem 1rem;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font-size: 0.8rem;
   cursor: pointer;
@@ -799,10 +802,10 @@ onMounted(async () => {
 }
 
 .color-group {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--bg-secondary);
   border-radius: var(--radius-md);
   padding: 1rem;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--border-light);
 }
 
 .color-group-title {
@@ -811,7 +814,7 @@ onMounted(async () => {
   color: var(--text-primary);
   margin: 0 0 0.75rem 0;
   padding-bottom: 0.5rem;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .color-items {
@@ -899,7 +902,7 @@ onMounted(async () => {
 .settings-footer {
   text-align: center;
   padding-top: 1rem;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  border-top: 1px solid var(--border-light);
 }
 
 .btn-reset {

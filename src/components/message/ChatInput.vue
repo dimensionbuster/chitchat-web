@@ -113,7 +113,7 @@ const onFileChange = (e: Event) => {
   gap: var(--spacing-sm);
   margin-top: var(--spacing-md);
   padding: var(--spacing-sm);
-  background: rgba(255, 255, 255, var(--container-opacity-chat, 0.85));
+  background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-xl);
   backdrop-filter: blur(10px);
@@ -136,8 +136,9 @@ const onFileChange = (e: Event) => {
 
 .text-input:focus {
   outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-accent-light);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.15);
+  background: var(--bg-primary);
 }
 
 .text-input:disabled {
@@ -150,18 +151,20 @@ const onFileChange = (e: Event) => {
   height: 44px;
   padding: 0;
   cursor: pointer;
-  background: var(--gradient-primary);
-  color: var(--text-on-gradient);
-  border: 1px solid var(--border-default);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  color: white;
+  border: none;
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all var(--transition-fast);
+  box-shadow: 0 2px 8px rgba(var(--color-primary-rgb), 0.3);
 }
 
 .send-button:hover:not(:disabled) {
-  box-shadow: var(--shadow-md);
+  background: linear-gradient(135deg, var(--color-secondary) 0%, var(--color-accent) 100%);
+  box-shadow: 0 4px 16px rgba(var(--color-primary-rgb), 0.4);
   transform: scale(1.05);
 }
 
@@ -198,8 +201,8 @@ const onFileChange = (e: Event) => {
   gap: var(--spacing-xs);
   padding: var(--spacing-sm) var(--spacing-md);
   background: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-light);
+  color: var(--color-secondary);
+  border: 1px dashed var(--color-accent);
   border-radius: var(--radius-lg);
   cursor: pointer;
   font-size: var(--font-size-sm);
@@ -208,8 +211,9 @@ const onFileChange = (e: Event) => {
 }
 
 .file-upload-label:hover:not(.disabled) {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .file-upload-label.disabled {

@@ -583,7 +583,7 @@ const handleImportSnapshot = async () => {
 .background-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, var(--bg-overlay-opacity-chat, 0.75));
+  background: rgba(var(--bg-primary-rgb, 255, 255, 255), var(--bg-overlay-opacity-chat, 0.75));
   pointer-events: none;
   z-index: 0;
 }

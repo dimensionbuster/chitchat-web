@@ -124,6 +124,7 @@ onMounted(async () => {
 
   /* ===== RGB values for rgba() usage ===== */
   --color-primary-rgb: 156, 124, 181;
+  --bg-primary-rgb: 250, 248, 252;
 
   /* ===== Typography ===== */
   --font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;

@@ -88,8 +88,8 @@ const getBackgroundColor = (name?: string): string => {
 
 .profile-avatar.clickable:hover {
   transform: scale(1.05);
-  box-shadow: var(--shadow-md);
-  border-color: var(--color-primary-light);
+  box-shadow: 0 4px 12px rgba(var(--color-primary-rgb), 0.3);
+  border-color: var(--color-accent);
 }
 
 .avatar-image {
@@ -104,9 +104,9 @@ const getBackgroundColor = (name?: string): string => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-on-primary);
+  color: white;
   font-weight: var(--font-weight-bold);
-  background: var(--gradient-primary);
+  background: linear-gradient(135deg, var(--color-secondary) 0%, var(--color-accent) 100%);
 }
 
 .avatar-initial {
