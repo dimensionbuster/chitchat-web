@@ -9,6 +9,13 @@ import * as Y from 'yjs'
 import type { useSignalingServer } from './useSignalingServer'
 
 const CHUNK_SIZE = 128 * 1024 // 128KB
+const MAX_BUFFER_SIZE = 8 * 1024 * 1024 // 8MB
+const FLOW_CONTROL_WINDOW = 50 // 50개 청크마다 ACK 대기
+const MIN_FLOW_CONTROL_WINDOW = 10 // 최소 윈도우
+const MAX_UNACKED_CHUNKS = 30 // 최대 미확인 청크 수 (3.75MB)
+const ACK_TIMEOUT = 10000 // ACK 대기 타임아웃
+const ACK_WAIT_INTERVAL = 50 // ACK 대기 체크 주기
+
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'turn:turn.gongbbu.com:3478', username: 'gongbbu', credential: 'gongbbu' },
@@ -72,7 +79,12 @@ type SyncAckMessage = {
   message?: string
 }
 
-type DataChannelMessage = SyncChunkMessage | SyncCompleteMessage | SyncAckMessage
+type SyncChunkAckMessage = {
+  type: 'sync-chunk-ack'
+  upToIndex: number // 이 인덱스까지 수신 완료
+}
+
+type DataChannelMessage = SyncChunkMessage | SyncCompleteMessage | SyncAckMessage | SyncChunkAckMessage
 
 /**
  * 초기 동기화 composable
@@ -167,8 +179,37 @@ export function useInitialSync(
 
       receivedChunks.set(chunkIndex, data)
 
-      if ((chunkIndex + 1) % 10 === 0) {
-        console.log(`[InitialSync] 청크 수신: ${receivedChunks.size}/${totalChunks}`)
+      // 🔥 백프레셔: 적응적 ACK 전송
+      const ackInterval = receivedChunks.size > 500 ? FLOW_CONTROL_WINDOW : MIN_FLOW_CONTROL_WINDOW
+
+      if (receivedChunks.size % ackInterval === 0) {
+        // 최대 연속 인덱스 계산
+        let consecutiveIndex = -1
+        for (let idx = 0; idx < totalChunks; idx++) {
+          if (receivedChunks.has(idx)) {
+            consecutiveIndex = idx
+          } else {
+            break
+          }
+        }
+
+        const ackMsg: SyncChunkAckMessage = {
+          type: 'sync-chunk-ack',
+          upToIndex: consecutiveIndex
+        }
+
+        try {
+          if (dataChannel && dataChannel.readyState === 'open') {
+            dataChannel.send(JSON.stringify(ackMsg))
+            console.log(`[InitialSync-ack] ACK 전송: ${consecutiveIndex} (받은: ${receivedChunks.size}/${totalChunks})`)
+          }
+        } catch {
+          // 무시
+        }
+      }
+
+      if ((chunkIndex + 1) % 50 === 0) {
+        console.log(`[InitialSync] 청크 수신: ${receivedChunks.size}/${totalChunks} (${((receivedChunks.size / totalChunks) * 100).toFixed(0)}%)`)
       }
 
       // 모든 청크 수신 완료 확인
@@ -193,9 +234,12 @@ export function useInitialSync(
             }
             cleanup()
             break
+          case 'sync-chunk-ack':
+            // 송신자는 ackHandler에서 처리하므로 여기서는 무시
+            break
         }
-      } catch (error) {
-        console.error('[InitialSync] DataChannel 메시지 파싱 실패:', error)
+      } catch {
+        // 무시
       }
     }
   }
@@ -390,31 +434,91 @@ export function useInitialSync(
       return
     }
 
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE
-      const end = Math.min(start + CHUNK_SIZE, snapshot.byteLength)
-      const chunk = snapshot.slice(start, end)
+    // 🔥 백프레셔: ACK 기반 흐름 제어
+    let lastAckedIndex = -1
+    let lastAckTime = Date.now()
+    let currentWindow = FLOW_CONTROL_WINDOW
 
-      // 헤더 추가: chunkIndex(4) + totalChunks(4) + data
-      const header = new ArrayBuffer(8)
-      const view = new DataView(header)
-      view.setUint32(0, i)
-      view.setUint32(4, totalChunks)
+    // ACK 메시지 핸들러
+    const ackHandler = (event: MessageEvent) => {
+      if (typeof event.data === 'string') {
+        try {
+          const msg = JSON.parse(event.data) as DataChannelMessage
+          if (msg.type === 'sync-chunk-ack') {
+            const prevAckedIndex = lastAckedIndex
+            lastAckedIndex = msg.upToIndex
+            lastAckTime = Date.now()
 
-      const message = new Uint8Array(header.byteLength + chunk.byteLength)
-      message.set(new Uint8Array(header), 0)
-      message.set(chunk, header.byteLength)
+            // 동적 윈도우 조정
+            const ackGap = msg.upToIndex - prevAckedIndex
+            if (ackGap >= currentWindow && currentWindow < FLOW_CONTROL_WINDOW) {
+              currentWindow = Math.min(currentWindow + 10, FLOW_CONTROL_WINDOW)
+            } else if (ackGap < currentWindow / 2 && currentWindow > MIN_FLOW_CONTROL_WINDOW) {
+              currentWindow = Math.max(currentWindow - 10, MIN_FLOW_CONTROL_WINDOW)
+            }
 
-      // DataChannel 버퍼 체크
-      while (dataChannel.bufferedAmount > 8 * 1024 * 1024) {
-        await new Promise(resolve => setTimeout(resolve, 100))
+            console.log(`[InitialSync-ack] ACK: ${msg.upToIndex} (gap: ${ackGap}, window: ${currentWindow})`)
+          }
+        } catch {
+          // 무시
+        }
       }
+    }
+    dataChannel.addEventListener('message', ackHandler)
 
-      dataChannel.send(message)
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        // 🔥 백프레셔: 미확인 청크가 너무 많으면 ACK 대기
+        const unackedChunks = i - lastAckedIndex - 1
+        if (unackedChunks >= MAX_UNACKED_CHUNKS) {
+          const targetAck = i - currentWindow
+          let waitTime = 0
+          const waitStartTime = Date.now()
 
-      if ((i + 1) % 10 === 0) {
-        console.log(`[InitialSync] 청크 전송: ${i + 1}/${totalChunks}`)
+          console.log(`[InitialSync-wait] 백프레셔 대기: unacked=${unackedChunks}, target=${targetAck}`)
+
+          while (lastAckedIndex < targetAck && waitTime < ACK_TIMEOUT) {
+            await new Promise(resolve => setTimeout(resolve, ACK_WAIT_INTERVAL))
+            waitTime = Date.now() - waitStartTime
+          }
+
+          if (lastAckedIndex >= targetAck) {
+            console.log(`[InitialSync-resume] 백프레셔 해제: ${waitTime}ms`)
+          } else {
+            console.warn(`[InitialSync-timeout] ACK 타임아웃 - 강제 진행`)
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+        }
+
+        const start = i * CHUNK_SIZE
+        const end = Math.min(start + CHUNK_SIZE, snapshot.byteLength)
+        const chunk = snapshot.slice(start, end)
+
+        // 헤더 추가: chunkIndex(4) + totalChunks(4) + data
+        const header = new ArrayBuffer(8)
+        const view = new DataView(header)
+        view.setUint32(0, i)
+        view.setUint32(4, totalChunks)
+
+        const message = new Uint8Array(header.byteLength + chunk.byteLength)
+        message.set(new Uint8Array(header), 0)
+        message.set(chunk, header.byteLength)
+
+        // DataChannel 버퍼 체크
+        while (dataChannel.bufferedAmount > MAX_BUFFER_SIZE) {
+          await new Promise(resolve => setTimeout(resolve, 50))
+        }
+
+        dataChannel.send(message)
+
+        if ((i + 1) % 50 === 0 || i === totalChunks - 1) {
+          const lag = i - lastAckedIndex - 1
+          const ackAge = Date.now() - lastAckTime
+          console.log(`[InitialSync] 전송: ${i + 1}/${totalChunks} (${(((i + 1) / totalChunks) * 100).toFixed(0)}%), lag=${lag}, ackAge=${ackAge}ms`)
+        }
       }
+    } finally {
+      dataChannel.removeEventListener('message', ackHandler)
     }
 
     // 완료 메시지
@@ -431,6 +535,12 @@ export function useInitialSync(
    */
   async function handleSyncOffer(offer: SyncOfferMessage) {
     if (offer.targetUuid !== myUuid) return
+
+    // 🔥 이미 다른 피어로부터 받는 중이면 무시 (첫 번째 응답만 수락)
+    if (peerConnection) {
+      console.log(`[InitialSync] 이미 수신 중 - Offer 무시 from ${offer.senderUuid.slice(-8)}`)
+      return
+    }
 
     console.log(`[InitialSync] Offer 수신 from ${offer.senderUuid.slice(-8)}`)
     console.log(`  - 크기: ${(offer.snapshotSize / 1024 / 1024).toFixed(2)}MB`)

@@ -318,12 +318,20 @@ async function createYjsInstance(roomId: string) {
 }
 
 const setUserAwareness = (provider: WebrtcProvider, userUuid?: string, nickname?: string) => {
+  // 🔥 setLocalState로 한 번에 설정 (전파 효율성)
+  const currentState = provider.awareness.getLocalState() || {}
+  const newState = { ...currentState }
+
   if (userUuid) {
-    provider.awareness.setLocalStateField('userUuid', userUuid)
+    newState.userUuid = userUuid
   }
   if (nickname) {
-    provider.awareness.setLocalStateField('nickname', nickname)
+    newState.nickname = nickname
+    // user 객체도 함께 설정 (호환성)
+    newState.user = { uuid: userUuid || newState.userUuid, nickname }
   }
+
+  provider.awareness.setLocalState(newState)
 }
 
 /**
@@ -378,6 +386,7 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
     // y-webrtc awareness만 연결 (doc sync 없이)
     instance.provider.awareness.setLocalState({
       userUuid,
+      nickname, // 🔥 최상위에도 설정 (호환성)
       user: { uuid: userUuid, nickname }
     })
 

@@ -24,8 +24,12 @@ export function useConnectedUsers(provider: WebrtcProvider, currentUserUuid: str
       const userUuid = stateObj.userUuid as string | undefined
 
       if (userUuid && userUuid !== currentUserUuid) {
-        // 닉네임은 awareness에서 가져오거나 UUID의 마지막 8자리 사용
-        const nickname = (stateObj.nickname as string) || userUuid.slice(-8)
+        // 닉네임은 awareness에서 가져오기 (여러 위치 확인)
+        const userObj = stateObj.user as { uuid?: string; nickname?: string } | undefined
+        const nickname =
+          (stateObj.nickname as string) || // setLocalStateField로 설정된 경우
+          userObj?.nickname ||              // setLocalState로 설정된 경우
+          userUuid.slice(-8)                // fallback
 
         users.push({
           clientId,

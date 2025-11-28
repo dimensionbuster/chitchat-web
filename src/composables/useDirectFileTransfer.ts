@@ -14,9 +14,12 @@ const { saveChunksBatch } = useFileTransferState()
 
 const CHUNK_SIZE = 128 * 1024 // 128KB
 const MAX_BUFFER_SIZE = 8 * 1024 * 1024 // 8MB
-const FLOW_CONTROL_WINDOW = 100 // 100개 청크마다 ACK 대기 (12.8MB)
+const FLOW_CONTROL_WINDOW = 50 // 50개 청크마다 ACK 대기 (6.4MB) - 백프레셔 개선
+const MIN_FLOW_CONTROL_WINDOW = 10 // 최소 윈도우 (느린 네트워크용)
+const MAX_UNACKED_CHUNKS = 100 // 최대 미확인 청크 수 (12.8MB)
 const DB_SAVE_CHUNK_INTERVAL = 10 // 10개 청크마다 DB 저장 (1.28MB) - 연결 끊김 시 손실 최소화
-const ACK_TIMEOUT = 5000 // ACK 대기 타임아웃 5초
+const ACK_TIMEOUT = 10000 // ACK 대기 타임아웃 10초
+const ACK_WAIT_INTERVAL = 50 // ACK 대기 체크 주기
 const BUFFER_WAIT_TIMEOUT = 30000 // 버퍼 대기 최대 30초
 
 type StartMessage = {
@@ -197,6 +200,7 @@ export function useDirectFileTransfer(
       let receivedChunksSet: Set<number> | null = null as Set<number> | null
       let skippedChunks = 0
       let resumeInfoReceived = false
+      let resumeWaitTimeout: number | null = null
 
       // 전송 시작 메시지 전송
       const startMsg: StartMessage = {
@@ -206,8 +210,19 @@ export function useDirectFileTransfer(
       }
       channel.send(JSON.stringify(startMsg))
 
-      // Flow control: ACK 대기용 변수
-      let lastAckedIndex = -1
+      // 🔥 Resume 메시지 대기 (최대 3초)
+      const resumePromise = new Promise<void>((resolve) => {
+        resumeWaitTimeout = window.setTimeout(() => {
+          console.log('[#15-0] Resume 메시지 타임아웃 - 새 전송으로 진행')
+          resumeInfoReceived = true
+          resolve()
+        }, 3000)
+      })
+
+      // 🔥 백프레셔: ACK 기반 흐름 제어
+      let lastAckedIndex = -1 // 수신자가 확인한 마지막 연속 청크 인덱스
+      let lastAckTime = Date.now() // 마지막 ACK 수신 시간
+      let currentWindow = FLOW_CONTROL_WINDOW // 동적 윈도우 크기
 
       // ACK 및 Resume 메시지 핸들러 (단일 핸들러로 통합)
       const messageHandler = (event: MessageEvent) => {
@@ -215,9 +230,24 @@ export function useDirectFileTransfer(
           try {
             const msg = JSON.parse(event.data) as TransferMessage
             if (msg.type === 'ack') {
+              const prevAckedIndex = lastAckedIndex
               lastAckedIndex = msg.upToIndex
-              console.log(`[#16-ack] ACK 수신: ${msg.upToIndex}`)
+              lastAckTime = Date.now()
+
+              // 🔥 동적 윈도우 조정: ACK가 빠르게 오면 윈도우 증가, 느리면 감소
+              const ackGap = msg.upToIndex - prevAckedIndex
+              if (ackGap >= currentWindow && currentWindow < FLOW_CONTROL_WINDOW) {
+                currentWindow = Math.min(currentWindow + 10, FLOW_CONTROL_WINDOW)
+              } else if (ackGap < currentWindow / 2 && currentWindow > MIN_FLOW_CONTROL_WINDOW) {
+                currentWindow = Math.max(currentWindow - 10, MIN_FLOW_CONTROL_WINDOW)
+              }
+
+              console.log(`[#16-ack] ACK 수신: ${msg.upToIndex} (gap: ${ackGap}, window: ${currentWindow})`)
             } else if (msg.type === 'resume' && !resumeInfoReceived) {
+              if (resumeWaitTimeout !== null) {
+                clearTimeout(resumeWaitTimeout)
+                resumeWaitTimeout = null
+              }
               receivedChunksSet = new Set(msg.receivedChunks)
               skippedChunks = receivedChunksSet.size
               resumeInfoReceived = true
@@ -229,6 +259,9 @@ export function useDirectFileTransfer(
         }
       }
       channel.addEventListener('message', messageHandler)
+
+      // 🔥 Resume 메시지 대기 (이어받기 체크)
+      await resumePromise
 
       try {
         for (let i = 0; i < totalChunks; i++) {
@@ -242,22 +275,18 @@ export function useDirectFileTransfer(
             continue
           }
 
-          // Flow control: FLOW_CONTROL_WINDOW개 청크마다 ACK 대기
-          if (i > 0 && i % FLOW_CONTROL_WINDOW === 0) {
-            // 안전 여유: 현재 전송하려는 청크보다 50개 뒤처져도 OK
-            const minRequiredAck = i - FLOW_CONTROL_WINDOW - 50
+          // 🔥 백프레셔: 미확인 청크가 너무 많으면 ACK 대기
+          const unackedChunks = i - lastAckedIndex - 1
+          if (unackedChunks >= MAX_UNACKED_CHUNKS) {
+            const targetAck = i - currentWindow
             let waitTime = 0
+            const waitStartTime = Date.now()
 
-            // ACK가 충분히 따라오지 않으면 대기
-            while (lastAckedIndex < minRequiredAck) {
-              await new Promise((resolve) => setTimeout(resolve, 50))
-              waitTime += 50
+            console.log(`[#16-wait] 백프레셔 대기 시작: unacked=${unackedChunks}, target=${targetAck}, lastAck=${lastAckedIndex}`)
 
-              // ACK 타임아웃 (계속 진행)
-              if (waitTime >= ACK_TIMEOUT) {
-                console.warn(`[#16] ACK 대기 타임아웃 - 계속 전송 (lastAck: ${lastAckedIndex}, minRequired: ${minRequiredAck}, current: ${i})`)
-                break
-              }
+            while (lastAckedIndex < targetAck && waitTime < ACK_TIMEOUT) {
+              await new Promise((resolve) => setTimeout(resolve, ACK_WAIT_INTERVAL))
+              waitTime = Date.now() - waitStartTime
 
               // 취소 확인
               if (checkCancelled && checkCancelled()) {
@@ -265,9 +294,20 @@ export function useDirectFileTransfer(
               }
             }
 
-            if (lastAckedIndex >= minRequiredAck) {
-              console.log(`[#16] Flow control OK: lastAck=${lastAckedIndex}, minRequired=${minRequiredAck}, current=${i}`)
+            if (lastAckedIndex >= targetAck) {
+              console.log(`[#16-resume] 백프레셔 해제: lastAck=${lastAckedIndex} (waited ${waitTime}ms)`)
+            } else {
+              console.warn(`[#16-timeout] ACK 타임아웃 - 강제 진행 (lastAck: ${lastAckedIndex}, target: ${targetAck})`)
+              // 타임아웃 시에도 최소한의 대기
+              await new Promise((resolve) => setTimeout(resolve, 100))
             }
+          }
+
+          // 🔥 주기적 ACK 상태 로깅 (동적 윈도우 기준)
+          if (i > 0 && i % currentWindow === 0) {
+            const lag = i - lastAckedIndex - 1
+            const ackAge = Date.now() - lastAckTime
+            console.log(`[#16-status] 청크 ${i}: ACK lag=${lag}, age=${ackAge}ms, window=${currentWindow}`)
           }
 
           const start = i * CHUNK_SIZE
@@ -320,6 +360,10 @@ export function useDirectFileTransfer(
       } finally {
         // 메시지 핸들러 정리
         channel.removeEventListener('message', messageHandler)
+        // 타임아웃 정리
+        if (resumeWaitTimeout !== null) {
+          clearTimeout(resumeWaitTimeout)
+        }
       }
 
       // 완료 메시지 전송
@@ -592,8 +636,12 @@ export function useDirectFileTransfer(
               pendingChunksBuffer.set(nextExpectedIndex, buffer)
               pendingSaveChunks++
 
-              // 🔥 Flow control: 받은 청크 중 최대 연속 인덱스 계산 (ACK용)
-              if (receivedChunksMap.size % FLOW_CONTROL_WINDOW === 0) {
+              // 🔥 백프레셔: 적응적 ACK 전송 (받은 청크 수 기반)
+              // 빠른 네트워크: 50개마다, 느린 네트워크: 10개마다 ACK
+              const ackInterval = receivedChunksMap.size > 500 ? FLOW_CONTROL_WINDOW : MIN_FLOW_CONTROL_WINDOW
+
+              if (receivedChunksMap.size % ackInterval === 0) {
+                // 최대 연속 인덱스 계산 (빈틈 없이 받은 마지막 청크)
                 let consecutiveIndex = -1
                 for (let idx = 0; idx < offer.totalChunks; idx++) {
                   if (receivedChunksMap.has(idx)) {
@@ -613,7 +661,7 @@ export function useDirectFileTransfer(
                   if (channel.readyState === 'open') {
                     try {
                       channel.send(JSON.stringify(ackMsg))
-                      console.log(`[#20] ACK 전송: ${consecutiveIndex} (받은 청크: ${receivedChunksMap.size})`)
+                      console.log(`[#20-ack] ACK 전송: ${consecutiveIndex} (받은: ${receivedChunksMap.size}/${offer.totalChunks}, 간격: ${ackInterval})`)
                     } catch (error) {
                       console.warn(`[#20] ACK 전송 실패:`, error)
                     }
