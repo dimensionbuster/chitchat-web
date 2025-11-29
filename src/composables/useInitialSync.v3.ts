@@ -107,6 +107,8 @@ export function useInitialSync(
   let expectedTotalChunks = 0
   let syncResolve: ((snapshot: Uint8Array | null) => void) | null = null
   let syncReject: ((error: Error) => void) | null = null
+  let isReceiving = false // 현재 수신 중인지 여부
+  let cleanupTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
    * PeerConnection 생성
@@ -232,7 +234,11 @@ export function useInitialSync(
             if (!msg.success) {
               console.error(`[InitialSync] 수신자 에러: ${msg.message}`)
             }
-            cleanup()
+            // ACK 받은 후 잠시 대기 후 cleanup (추가 메시지 처리 여유)
+            if (cleanupTimer) clearTimeout(cleanupTimer)
+            cleanupTimer = setTimeout(() => {
+              cleanup()
+            }, 1000)
             break
           case 'sync-chunk-ack':
             // 송신자는 ackHandler에서 처리하므로 여기서는 무시
@@ -288,7 +294,11 @@ export function useInitialSync(
         syncReject = null
       }
 
-      cleanup()
+      // ACK 전송 후 잠시 대기 후 cleanup
+      if (cleanupTimer) clearTimeout(cleanupTimer)
+      cleanupTimer = setTimeout(() => {
+        cleanup()
+      }, 500)
     } catch (error) {
       console.error('[InitialSync] 스냅샷 병합 실패:', error)
 
@@ -308,7 +318,11 @@ export function useInitialSync(
         syncReject = null
       }
 
-      cleanup()
+      // 실패해도 ACK 전송 대기 후 cleanup
+      if (cleanupTimer) clearTimeout(cleanupTimer)
+      cleanupTimer = setTimeout(() => {
+        cleanup()
+      }, 500)
     }
   }
 
@@ -335,16 +349,32 @@ export function useInitialSync(
     console.log('[InitialSync] 요청 메시지 발행:', syncTopic)
     signaling.publish(syncTopic, request as unknown as Record<string, unknown>)
 
-    // Offer 대기 (5초 - 빈 채팅방일 경우 빠르게 시작)
+    // Offer 대기 (10초)
     return new Promise<Uint8Array | null>((resolve, reject) => {
       syncResolve = resolve
       syncReject = reject
 
-      setTimeout(() => {
-        console.log('[InitialSync] Offer 타임아웃 - 빈 채팅방으로 시작')
-        cleanup()
-        resolve(null)
-      }, 5000)
+      const timeoutId = setTimeout(() => {
+        if (syncResolve) {
+          console.log('[InitialSync] Offer 타임아웃 - 빈 채팅방으로 시작')
+          cleanup()
+          resolve(null)
+          syncResolve = null
+          syncReject = null
+        }
+      }, 10000)
+
+      // resolve/reject 시 타임아웃 취소
+      const originalResolve = syncResolve
+      const originalReject = syncReject
+      syncResolve = (snapshot) => {
+        clearTimeout(timeoutId)
+        originalResolve?.(snapshot)
+      }
+      syncReject = (error) => {
+        clearTimeout(timeoutId)
+        originalReject?.(error)
+      }
     })
   }
 
@@ -360,6 +390,12 @@ export function useInitialSync(
 
     if (request.requesterUuid === myUuid) {
       console.log('[InitialSync] 자기 자신의 요청 - 무시')
+      return
+    }
+
+    // 🔥 이미 다른 요청에 응답 중이면 무시 (동시 다중 응답 방지)
+    if (peerConnection || dataChannel) {
+      console.log(`[InitialSync] 이미 응답 중 - 요청 무시 from ${request.requesterUuid.slice(-8)}`)
       return
     }
 
@@ -537,10 +573,12 @@ export function useInitialSync(
     if (offer.targetUuid !== myUuid) return
 
     // 🔥 이미 다른 피어로부터 받는 중이면 무시 (첫 번째 응답만 수락)
-    if (peerConnection) {
+    if (isReceiving || peerConnection) {
       console.log(`[InitialSync] 이미 수신 중 - Offer 무시 from ${offer.senderUuid.slice(-8)}`)
       return
     }
+
+    isReceiving = true
 
     console.log(`[InitialSync] Offer 수신 from ${offer.senderUuid.slice(-8)}`)
     console.log(`  - 크기: ${(offer.snapshotSize / 1024 / 1024).toFixed(2)}MB`)
@@ -642,6 +680,11 @@ export function useInitialSync(
   function cleanup() {
     console.log('[InitialSync] cleanup 호출 - 연결만 정리')
 
+    if (cleanupTimer) {
+      clearTimeout(cleanupTimer)
+      cleanupTimer = null
+    }
+
     if (dataChannel) {
       if (dataChannel.readyState === 'open') {
         dataChannel.close()
@@ -657,6 +700,7 @@ export function useInitialSync(
     receivedChunks.clear()
     expectedTotalChunks = 0
     pendingIceCandidates.length = 0
+    isReceiving = false
   }
 
   /**
