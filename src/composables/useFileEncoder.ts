@@ -19,7 +19,16 @@ export function useFileEncoder() {
    */
   async function prepareFile(file: File) {
     const arrayBuffer = await file.arrayBuffer()
-    const fileId = crypto.randomUUID()
+
+    // 이어받기를 위해 파일 내용 기반의 일관된 ID 생성 (파일명 + 크기 + 수정시간)
+    const fileIdentifier = `${file.name}-${file.size}-${file.lastModified}`
+    const encoder = new TextEncoder()
+    const data = encoder.encode(fileIdentifier)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    const fileId = hashHex // 동일 파일은 항상 동일 ID
+
     const blob = new Blob([arrayBuffer], { type: file.type })
 
     await cacheFile(fileId, blob)

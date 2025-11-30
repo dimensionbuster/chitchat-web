@@ -420,7 +420,7 @@ export function useInitialSync(
 
       // DataChannel 생성 (송신자)
       dataChannel = peerConnection.createDataChannel('initial-sync', {
-        ordered: true,
+        ordered: false, // 순서 보장 안함 - 청크 인덱스로 처리, 패킷 유실 시 블로킹 방지
         maxPacketLifeTime: 3000,
       })
 

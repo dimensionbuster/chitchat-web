@@ -326,7 +326,17 @@ export function useFileTransferState() {
    * 모든 청크를 받았는지 확인
    */
   function isComplete(state: PartialDownloadState): boolean {
-    return state.receivedChunks.size === state.totalChunks
+    // ordered: false 환경에서는 개수만으로 판단 불가 - 모든 인덱스 확인 필요
+    if (state.receivedChunks.size !== state.totalChunks) {
+      return false
+    }
+    // 0부터 totalChunks-1까지 모두 있는지 확인
+    for (let i = 0; i < state.totalChunks; i++) {
+      if (!state.receivedChunks.has(i)) {
+        return false
+      }
+    }
+    return true
   }
 
   /**

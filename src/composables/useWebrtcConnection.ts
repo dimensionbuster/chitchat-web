@@ -156,7 +156,7 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
 
     // DataChannel 생성
     const channel = pc.createDataChannel('file-transfer', {
-      ordered: true,
+      ordered: false, // 순서 보장 안함 - 청크 인덱스로 처리, 패킷 유실 시 블로킹 방지
       maxPacketLifeTime: 3000,
     })
 
