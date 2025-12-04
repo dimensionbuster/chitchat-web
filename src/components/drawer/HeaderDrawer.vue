@@ -119,12 +119,12 @@ const handleOpenSettings = () => {
               />
             </div>
 
-            <!-- 테마 설정 섹션 (Electron 전용) -->
+            <!-- 설정 섹션 (Electron 전용) -->
             <div v-if="isElectron" class="menu-section">
-              <div class="section-title">테마 설정</div>
+              <div class="section-title">설정</div>
               <button class="menu-item" @click="handleOpenSettings">
                 <span class="menu-icon">⚙️</span>
-                <span class="menu-label">스타일 설정 열기</span>
+                <span class="menu-label">설정 열기</span>
               </button>
             </div>
 

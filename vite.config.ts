@@ -13,4 +13,10 @@ export default defineConfig({
     },
   },
   base: process.env.ELECTRON ? './' : '/chitchat-web/',
+  server: {
+    fs: {
+      strict: false
+    }
+  },
+  assetsInclude: ['**/*.mp3', '**/*.wav', '**/*.ogg']
 })

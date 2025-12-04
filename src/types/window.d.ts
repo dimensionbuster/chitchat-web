@@ -24,6 +24,15 @@ export interface ElectronApi {
   selectBackgroundImage: () => Promise<ArrayBuffer | null>
   // 설정 창 API
   openSettings: () => void
+  // 알림 소리 API
+  setNotificationSound: (audioData: ArrayBuffer) => Promise<boolean>
+  getNotificationSound: () => Promise<string | null>
+  removeNotificationSound: () => Promise<boolean>
+  selectNotificationSound: () => Promise<ArrayBuffer | null>
+  setNotificationVolume: (volume: number) => Promise<void>
+  getNotificationVolume: () => Promise<number>
+  setNotificationEnabled: (enabled: boolean) => Promise<void>
+  getNotificationEnabled: () => Promise<boolean>
 }
 
 declare global {

@@ -7,6 +7,7 @@ export interface FileTransferProgress {
   totalChunks: number
   receivedChunks: number
   totalBytes: number
+  receivedBytes: number // 실제 받은 바이트 (동적 청크 크기 대응)
   isComplete: boolean
   startTime: number
   isResumable: boolean // 이어받기 가능 여부
@@ -52,6 +53,7 @@ export function useFileTransferProgress() {
       totalChunks,
       receivedChunks: 0,
       totalBytes,
+      receivedBytes: 0,
       isComplete: false,
       startTime: Date.now(),
       isResumable: type === 'download' && isResumable,
@@ -62,12 +64,15 @@ export function useFileTransferProgress() {
   /**
    * 청크 수신/전송 업데이트 (쓰로틀링 적용)
    */
-  function updateProgress(fileId: string, receivedChunks: number, forceUpdate = false) {
+  function updateProgress(fileId: string, receivedChunks: number, forceUpdate = false, receivedBytes?: number) {
     const transfer = transfers[fileId]
     if (!transfer) return
 
     // 진행 상태는 항상 업데이트 (내부 상태)
     transfer.receivedChunks = receivedChunks
+    if (receivedBytes !== undefined) {
+      transfer.receivedBytes = receivedBytes
+    }
 
     // UI 업데이트는 쓰로틀링 (렉 방지)
     const now = Date.now()
@@ -89,6 +94,7 @@ export function useFileTransferProgress() {
 
     transfer.isComplete = true
     transfer.receivedChunks = transfer.totalChunks
+    transfer.receivedBytes = transfer.totalBytes
     updateCounter.value++
     lastUIUpdate.delete(fileId) // 완료 시 쓰로틀 타이머 제거
 
@@ -128,13 +134,14 @@ export function useFileTransferProgress() {
 
   /**
    * 특정 파일의 진행률 (0-100%)
+   * 동적 청크 크기를 위해 bytes 기반으로 계산
    */
   function getProgressPercent(fileId: string) {
     void updateCounter.value // 반응성 트리거
     const transfer = transfers[fileId]
     if (!transfer) return 0
-    if (transfer.totalChunks === 0) return 0
-    return (transfer.receivedChunks / transfer.totalChunks) * 100
+    if (transfer.totalBytes === 0) return 0
+    return (transfer.receivedBytes / transfer.totalBytes) * 100
   }
 
   /**

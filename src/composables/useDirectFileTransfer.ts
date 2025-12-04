@@ -12,13 +12,16 @@ import { useFileTransferState } from './useFileTransferState'
 
 const { saveChunksBatch } = useFileTransferState()
 
-const CHUNK_SIZE = 128 * 1024 // 128KB
-const MAX_BUFFER_SIZE = 8 * 1024 * 1024 // 8MB
-const BUFFER_LOW_WATERMARK = 2 * 1024 * 1024 // 2MB - 버퍼가 이 이하로 떨어지면 전송 재개
-const ACK_WINDOW = 20 // 20개 청크마다 ACK 요청 (2.56MB)
-const ACK_TIMEOUT = 10000 // ACK 대기 타임아웃 10초
-const DB_SAVE_CHUNK_INTERVAL = 50 // 50개 청크마다 DB 저장 (6.4MB)
-const DB_SAVE_META_INTERVAL = 10 // 10개 청크마다 메타데이터 저장 (가벼움)
+// 고정 청크 크기 설정 (Electron 환경 최적화)
+const CHUNK_SIZE = 64 * 1024 // 64KB (고정) - Electron은 안정적이고 throughput 향상 가능
+
+// 버퍼 설정 (Electron 환경)
+const MAX_BUFFER_SIZE = 12 * 1024 * 1024 // 12MB (high-water mark) - Electron은 버퍼 여유 있음
+const BUFFER_LOW_WATERMARK = 2 * 1024 * 1024 // 2MB (low-water mark) - resume 시점
+const ACK_WINDOW = 20 // 20개 청크마다 ACK 대기 (1.28MB)
+const ACK_TIMEOUT = 15000 // ACK 대기 타임아웃 15초
+const DB_SAVE_CHUNK_INTERVAL = 50 // 50개 청크마다 DB 배치 저장 (3.2MB)
+const DB_SAVE_META_INTERVAL = 10 // 10개 청크마다 메타데이터 저장 (640KB)
 const BUFFER_WAIT_TIMEOUT = 30000 // 버퍼 대기 최대 30초
 const BUFFER_CHECK_INTERVAL = 100 // 버퍼 체크 간격 100ms
 
@@ -26,6 +29,7 @@ type StartMessage = {
   type: 'start'
   totalChunks: number
   fileSize: number
+  chunkSize: number // 송신자가 사용하는 청크 크기 (동적)
   hasPartialData?: boolean // 수신자가 이어받기 데이터를 가지고 있는지 여부
 }
 
@@ -54,7 +58,12 @@ type RequestAckMessage = {
   type: 'request-ack'
 }
 
-type TransferMessage = StartMessage | CompleteMessage | ErrorMessage | AckMessage | ResumeMessage | RequestAckMessage
+type ReRequestMessage = {
+  type: 'reRequest'
+  missingChunks: number[]
+}
+
+type TransferMessage = StartMessage | CompleteMessage | ErrorMessage | AckMessage | ResumeMessage | RequestAckMessage | ReRequestMessage
 
 /**
  * 직접 P2P로 파일 전송
@@ -83,10 +92,14 @@ export function useDirectFileTransfer(
 
   /**
    * 데이터 채널 생성 시 큐 매니저에 등록
+   * connectionId 형식: "fileId-peerId"
+   * fileId는 UUID이므로 하이픈이 여러 개 포함됨
+   * 마지막 "-user-"를 기준으로 peerUuid를 추출
    */
   activeChannels.value.forEach((channel, connectionId) => {
-    const peerId = connectionId.split('-')[1] // "fileId-peerId" 형식
-    if (peerId) {
+    const userIndex = connectionId.lastIndexOf('-user-')
+    if (userIndex !== -1) {
+      const peerId = connectionId.substring(userIndex + 1) // "-user-" 다음부터
       registerDataChannel(peerId, channel)
     }
   })
@@ -102,24 +115,26 @@ export function useDirectFileTransfer(
 
     // 이미 전송 중이면 무시
     if (activeTransfers.has(transferKey)) {
-      console.log(`[#15-guard] 이미 전송 중: ${fileId}`)
+      const status = activeTransfers.get(transferKey)
+      console.warn(`[#15-guard] 이미 전송 중: ${fileId}, 상태: ${status}`)
+      console.warn(`[#15-guard] activeTransfers 내용:`, Array.from(activeTransfers.entries()))
       return
     }
 
-    // 캐시에서 파일 정보 로드
+    // 캐시에서 파일 정보 로드 (Blob으로 유지 - 스트리밍)
     const cachedBlob = await getCachedFile(fileId)
     if (!cachedBlob) {
       throw new Error('파일을 찾을 수 없습니다')
     }
 
     const meta = files.get(fileId)
-    const fileData = await cachedBlob.arrayBuffer()
+    const fileSize = cachedBlob.size
 
     // 파일 크기에 따라 우선순위 결정
     let priority = DataChannelPriority.NORMAL
-    if (cachedBlob.size < 100 * 1024) {
+    if (fileSize < 100 * 1024) {
       priority = DataChannelPriority.HIGH // 100KB 미만: 높음
-    } else if (cachedBlob.size > 10 * 1024 * 1024) {
+    } else if (fileSize > 10 * 1024 * 1024) {
       priority = DataChannelPriority.LOW // 10MB 초과: 낮음
     }
 
@@ -128,14 +143,14 @@ export function useDirectFileTransfer(
       fileId,
       meta?.name || fileId,
       targetUuid,
-      fileData.byteLength,
+      fileSize,
       priority,
       async (onProgress, checkCancelled) => {
-        // 실제 전송 로직
+        // 실제 전송 로직 (Blob 전달)
         await sendFileDirectInternal(
           fileId,
           targetUuid,
-          fileData,
+          cachedBlob,
           onProgress,
           checkCancelled
         )
@@ -147,12 +162,12 @@ export function useDirectFileTransfer(
   }
 
   /**
-   * 내부 전송 함수 (큐 매니저가 호출)
+   * 내부 전송 함수 (큐 매니저가 호출) - Blob 스트리밍 방식
    */
   async function sendFileDirectInternal(
     fileId: string,
     targetUuid: string,
-    fileData: ArrayBuffer,
+    fileBlob: Blob,
     onProgress?: (sent: number, total: number) => void,
     checkCancelled?: () => boolean
   ): Promise<void> {
@@ -163,17 +178,21 @@ export function useDirectFileTransfer(
     activeTransfers.set(transferKey, 'sending')
 
     try {
-      const totalChunks = Math.ceil(fileData.byteLength / CHUNK_SIZE)
+      // 고정 청크 크기 사용
+      const fileSize = fileBlob.size
+      const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
 
       const transferStartTime = performance.now()
-      console.log(`[#15] P2P 전송 시작 (큐 관리): ${totalChunks}개 청크, ${(fileData.byteLength / 1024 / 1024).toFixed(2)}MB`)
+      console.log(`[#15] P2P 전송 시작 (큐 관리): ${totalChunks}개 청크 (${CHUNK_SIZE / 1024}KB 고정), ${(fileSize / 1024 / 1024).toFixed(2)}MB`)
 
       // 진행 상태 초기화
       const meta = files.get(fileId)
-      startTransfer(transferKey, meta?.name || fileId, 'upload', totalChunks, fileData.byteLength, false)
+      startTransfer(transferKey, meta?.name || fileId, 'upload', totalChunks, fileSize, false)
 
       // Offer 생성 및 연결 (이어받기 정보는 Answer에서 전달됨)
-      const channel = await createOffer(fileId, targetUuid, totalChunks, fileData.byteLength)
+      console.log(`[#15] Offer 생성 시작: ${fileId} → ${targetUuid}`)
+      const channel = await createOffer(fileId, targetUuid, totalChunks, fileSize)
+      console.log(`[#15] Offer 생성 완료, 채널 상태: ${channel.readyState}`)
 
       // 에러 핸들러 등록 (버퍼 오버플로우 감지)
       channel.onerror = (event) => {
@@ -183,17 +202,27 @@ export function useDirectFileTransfer(
         }
       }
 
-      // 채널 열릴 때까지 대기
+      // 채널 열릴 때까지 대기 (큰 파일은 더 오래 걸릴 수 있음)
       if (channel.readyState !== 'open') {
+        console.log(`[#15] 채널 열림 대기 중... (현재 상태: ${channel.readyState})`)
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('채널 열림 타임아웃')), 10000)
+          const timeout = setTimeout(() => {
+            console.error(`[#15] 채널 열림 타임아웃 (30초) - 상태: ${channel.readyState}`)
+            reject(new Error('채널 열림 타임아웃'))
+          }, 30000)
+
           const openHandler = () => {
             clearTimeout(timeout)
+            console.log(`[#15] 채널 열림 성공`)
             resolve()
           }
+
           const errorHandler = (error: Event) => {
             clearTimeout(timeout)
             console.error('[#15] 채널 열기 실패:', error)
+            if (error instanceof RTCErrorEvent) {
+              console.error(`[#15] 상세: ${error.error?.errorDetail}, ${error.error?.message}`)
+            }
             reject(new Error('채널 에러'))
           }
           channel.addEventListener('open', openHandler, { once: true })
@@ -212,8 +241,9 @@ export function useDirectFileTransfer(
       // 전송 시작 메시지 전송
       const startMsg: StartMessage = {
         type: 'start',
-        totalChunks,
-        fileSize: fileData.byteLength
+        totalChunks: totalChunks,
+        fileSize: fileSize,
+        chunkSize: CHUNK_SIZE
       }
       channel.send(JSON.stringify(startMsg))
 
@@ -229,6 +259,21 @@ export function useDirectFileTransfer(
               // 수신자의 start 응답 (이어받기 여부 포함)
               receiverHasPartialData = msg.hasPartialData || false
               console.log(`[#15-start] 수신자 응답: hasPartialData=${receiverHasPartialData}`)
+            } else if (msg.type === 'reRequest') {
+              // 수신자가 누락 청크 재요청
+              const reRequestMsg = msg as ReRequestMessage
+              const missingChunks = reRequestMsg.missingChunks
+              console.log(`[#15-reRequest] 재요청 수신: ${missingChunks.length}개 청크`)
+
+              // receivedChunksSet에서 제거 (재전송 대상으로 표시)
+              missingChunks.forEach(idx => receivedChunksSet.delete(idx))
+
+              // 백트래킹: 가장 작은 누락 청크부터 재전송
+              const minMissing = Math.min(...missingChunks)
+              if (currentChunkIndex > minMissing) {
+                console.log(`[#15-reRequest] 백트래킹: ${currentChunkIndex} → ${minMissing}`)
+                currentChunkIndex = minMissing
+              }
             } else if (msg.type === 'ack') {
               // ACK 순서 보장 안되므로 더 큰 값(최신 정보)만 반영
               const wasUpdated = msg.nextChunkIndex > confirmedNextChunk
@@ -269,11 +314,37 @@ export function useDirectFileTransfer(
       }
       channel.addEventListener('message', messageHandler)
 
-      // Resume 정보 대기: 수신자가 이어받기 데이터가 있을 때만 대기
-      if (receiverHasPartialData) {
+      // Start 메시지 대기: 수신자가 준비될 때까지 대기 (필수!)
+      let startReceived = false
+      const startWaitStart = Date.now()
+      const START_WAIT_TIMEOUT = 5000
+      console.log(`[#15-handshake] 수신자 준비 대기 중 (start 메시지)...`)
+
+      while (!startReceived && Date.now() - startWaitStart < START_WAIT_TIMEOUT) {
+        // start 메시지 수신 여부 확인 (messageHandler에서 설정됨)
+        if (confirmedNextChunk >= 0) {
+          startReceived = true
+          break
+        }
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+        // 채널 상태 확인
+        if (channel.readyState !== 'open') {
+          throw new Error(`대기 중 채널 닫힘 (상태: ${channel.readyState})`)
+        }
+      }
+
+      if (!startReceived) {
+        console.warn(`[#15-handshake] ⚠️ Start 메시지 타임아웃 (${Date.now() - startWaitStart}ms) - 강제 진행`)
+      } else {
+        console.log(`[#15-handshake] ✅ Start 메시지 수신 완료 (${Date.now() - startWaitStart}ms)`)
+      }
+
+      // Resume 정보 대기: 수신자가 이어받기 데이터가 있을 때만 추가 대기
+      if (receiverHasPartialData && !resumeInfoReceived) {
         const resumeWaitStart = Date.now()
         const RESUME_WAIT_TIMEOUT = 3000
-        console.log(`[#15-resume] 수신자가 이어받기 데이터 보유 - Resume 정보 대기 중...`)
+        console.log(`[#15-resume] 이어받기 정보 대기 중...`)
         while (!resumeInfoReceived && Date.now() - resumeWaitStart < RESUME_WAIT_TIMEOUT) {
           await new Promise(resolve => setTimeout(resolve, 50))
         }
@@ -283,8 +354,16 @@ export function useDirectFileTransfer(
         } else {
           console.warn(`[#15-resume] Resume 정보 타임아웃 - 처음부터 전송`)
         }
-      } else {
-        console.log(`[#15-resume] 처음 받는 파일 - 즉시 전송 시작`)
+      }
+
+      // 이어받기: 첫 번째 미수신 청크부터 시작
+      let currentChunkIndex = 0 // 청크 인덱스는 별도 추적
+      if (receivedChunksSet.size > 0) {
+        // 첫 번째 미수신 청크 찾기
+        while (currentChunkIndex < totalChunks && receivedChunksSet.has(currentChunkIndex)) {
+          currentChunkIndex++
+        }
+        console.log(`[#16-resume] 이어받기 시작: 청크 ${currentChunkIndex}부터 (offset=${(currentChunkIndex * CHUNK_SIZE / 1024 / 1024).toFixed(2)}MB)`)
       }
 
       // 주기적인 ACK 요청 (5초마다)
@@ -293,7 +372,9 @@ export function useDirectFileTransfer(
       let actualSentChunks = 0 // 실제로 전송한 청크 수 (스킵 제외)
 
       try {
-        for (let i = 0; i < totalChunks; i++) {
+        while (currentChunkIndex < totalChunks) {
+          const chunkIndex = currentChunkIndex
+
           // 취소 확인
           if (checkCancelled && checkCancelled()) {
             throw new Error('전송 취소됨')
@@ -305,7 +386,7 @@ export function useDirectFileTransfer(
             try {
               const requestMsg: RequestAckMessage = { type: 'request-ack' }
               channel.send(JSON.stringify(requestMsg))
-              console.log(`[#16-ack] ACK 요청 전송 (chunk=${i}, sent=${actualSentChunks}, skipped=${skippedChunks})`)
+              console.log(`[#16-ack] ACK 요청 전송 (chunk=${chunkIndex}, sent=${actualSentChunks}, skipped=${skippedChunks})`)
               lastAckRequestTime = now
             } catch (error) {
               console.warn('[#16-ack] ACK 요청 전송 실패:', error)
@@ -313,13 +394,14 @@ export function useDirectFileTransfer(
           }
 
           // 이미 받은 청크는 건너뜀
-          if (receivedChunksSet.has(i)) {
-            // 스킵한 청크도 진행률에 반영
-            const shouldUpdate = (i + 1) % 100 === 0 || i === totalChunks - 1
-            updateProgress(transferKey, i + 1, shouldUpdate)
+          if (receivedChunksSet.has(chunkIndex)) {
+            currentChunkIndex++ // 다음 청크로 이동
+
+            // 진행률 반영
+            const shouldUpdate = (chunkIndex + 1) % 100 === 0 || chunkIndex === totalChunks - 1
+            updateProgress(transferKey, chunkIndex + 1, shouldUpdate)
             if (onProgress) {
-              const end = Math.min((i + 1) * CHUNK_SIZE, fileData.byteLength)
-              onProgress(end, fileData.byteLength)
+              onProgress(currentChunkIndex * CHUNK_SIZE, fileSize)
             }
             continue
           }
@@ -329,17 +411,17 @@ export function useDirectFileTransfer(
 
           // Flow control 1: ACK 기반 백프레셔 (수신자 실제 처리 상태 확인)
           // 수신자가 원하는 다음 청크보다 ACK_WINDOW개 이상 앞서 나가면 대기
-          const gap = i - confirmedNextChunk // 현재 전송하려는 청크 - 수신자가 받고 싶은 다음 청크
+          const gap = chunkIndex - confirmedNextChunk // 현재 전송하려는 청크 - 수신자가 받고 싶은 다음 청크
 
           if (gap >= ACK_WINDOW) {
             const waitStart = Date.now()
             const oldConfirmed = confirmedNextChunk
-            console.log(`[#16-ack] 백프레셔 대기 시작: 전송할청크=${i}, 수신자요청=${confirmedNextChunk}, 차이=${gap}`)
+            console.log(`[#16-ack] 백프레셔 대기 시작: 전송할청크=${chunkIndex}, 수신자요청=${confirmedNextChunk}, 차이=${gap}`)
 
             // 차이가 ACK_WINDOW 미만이 될 때까지 대기
             let waitCount = 0
             let timeoutOccurred = false
-            while (i - confirmedNextChunk >= ACK_WINDOW) {
+            while (chunkIndex - confirmedNextChunk >= ACK_WINDOW) {
               await new Promise((resolve) => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
               waitCount++
 
@@ -350,7 +432,7 @@ export function useDirectFileTransfer(
 
               // ACK 타임아웃 - 수신자 상태 재측정 및 백트래킹
               if (Date.now() - waitStart > ACK_TIMEOUT) {
-                console.warn(`[#16-ack] ⚠️ ACK 대기 타임아웃! 수신자 상태 재측정 시작 (전송=${i}, 이전요청=${confirmedNextChunk})`)
+                console.warn(`[#16-ack] ⚠️ ACK 대기 타임아웃! 수신자 상태 재측정 시작 (전송=${chunkIndex}, 이전요청=${confirmedNextChunk})`)
 
                 // 즉시 ACK 요청하여 수신자 실제 상태 확인
                 try {
@@ -373,22 +455,23 @@ export function useDirectFileTransfer(
                   console.warn(`[#16-backtrack] ✅ ACK 수신: 수신자는 ${confirmedNextChunk}까지 받음 - 백트래킹 시작`)
 
                   // 현재 위치가 수신자가 받은 위치보다 앞서있으면 백트래킹
-                  if (i > confirmedNextChunk) {
+                  if (chunkIndex > confirmedNextChunk) {
                     const backtrackTo = confirmedNextChunk
-                    console.warn(`[#16-backtrack] 백트래킹: ${i} → ${backtrackTo} (${i - backtrackTo}개 청크 되돌림)`)
-                    i = backtrackTo - 1 // for문에서 i++되므로 -1
+                    console.warn(`[#16-backtrack] 백트래킹: ${chunkIndex} → ${backtrackTo} (${chunkIndex - backtrackTo}개 청크 되돌림)`)
+                    currentChunkIndex = backtrackTo // 청크 인덱스 조정
                     timeoutOccurred = true
                     break
                   } else {
-                    console.log(`[#16-backtrack] 백트래킹 불필요 - 현재 위치=${i}, 수신자=${confirmedNextChunk}`)
+                    console.log(`[#16-backtrack] 백트래킹 불필요 - 현재 위치=${chunkIndex}, 수신자=${confirmedNextChunk}`)
                     timeoutOccurred = true
                     break
                   }
                 } else {
-                  // ACK 못받음 - 윈도우만 리셋하여 계속 진행
-                  console.warn(`[#16-backtrack] ⚠️ ACK 응답 없음 - 윈도우만 리셋`)
-                  confirmedNextChunk = Math.max(i - Math.floor(ACK_WINDOW / 2), skippedChunks)
-                  console.warn(`[#16-backtrack] 새로운 confirmed=${confirmedNextChunk}, gap=${i - confirmedNextChunk}`)
+                  // ACK 못받음 - 수신자가 요청하는 위치로 백트래킹 (청크 유실 가능성)
+                  console.warn(`[#16-backtrack] ⚠️ ACK 응답 없음 - 수신자 요청 위치로 백트래킹`)
+                  const backtrackTo = confirmedNextChunk
+                  console.warn(`[#16-backtrack] 백트래킹: ${chunkIndex} → ${backtrackTo} (청크 재전송)`)
+                  currentChunkIndex = backtrackTo // 청크 인덱스 조정
                   timeoutOccurred = true
                   break
                 }
@@ -402,9 +485,9 @@ export function useDirectFileTransfer(
 
             const waitTime = Date.now() - waitStart
             if (timeoutOccurred) {
-              if (i < oldConfirmed) {
+              if (currentChunkIndex < oldConfirmed) {
                 // 백트래킹 발생
-                console.log(`[#16-ack] 타임아웃 후 백트래킹 (${waitTime}ms) - 전송 위치 조정 (${i + 1} ← ${oldConfirmed + 1})`)
+                console.log(`[#16-ack] 타임아웃 후 백트래킹 (${waitTime}ms) - 전송 위치 조정 (${currentChunkIndex + 1} ← ${oldConfirmed + 1})`)
               } else {
                 // 윈도우만 리셋
                 console.log(`[#16-ack] 타임아웃 후 복구 (${waitTime}ms) - 윈도우 리셋 (confirmed: ${oldConfirmed} → ${confirmedNextChunk})`)
@@ -440,36 +523,97 @@ export function useDirectFileTransfer(
             console.log(`[#16-buf] 버퍼 정리 완료: ${waitTime}ms, ${(drainedAmount / 1024 / 1024).toFixed(2)}MB 전송됨, 현재: ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB`)
           }
 
-          const start = i * CHUNK_SIZE
-          const end = Math.min(start + CHUNK_SIZE, fileData.byteLength)
-          const chunk = fileData.slice(start, end)
+          // 청크 인덱스 기반으로 청크 생성 (Blob 슬라이싱 - 스트리밍)
+          const chunkStart = currentChunkIndex * CHUNK_SIZE
+          const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, fileSize)
+          const chunkBlob = fileBlob.slice(chunkStart, chunkEnd)
+          const chunkData = await chunkBlob.arrayBuffer() // 필요한 부분만 메모리에 로드
+          const actualChunkSize = chunkData.byteLength
 
           // 청크 인덱스(4바이트) + 데이터를 하나의 버퍼로 결합 (순서 보장)
-          const combinedBuffer = new ArrayBuffer(4 + chunk.byteLength)
+          const combinedBuffer = new ArrayBuffer(4 + actualChunkSize)
           const view = new DataView(combinedBuffer)
-          view.setUint32(0, i, true) // 리틀 엔디안으로 인덱스 저장
-          new Uint8Array(combinedBuffer, 4).set(new Uint8Array(chunk))
+          view.setUint32(0, chunkIndex, true) // 리틀 엔디안으로 인덱스 저장
+          new Uint8Array(combinedBuffer, 4).set(new Uint8Array(chunkData))
 
-          // 결합된 버퍼 전송 (한 번에 전송하여 순서 보장)
+          // send() 전 버퍼 체크 - 256KB 넘으면 대기
+          while (channel.bufferedAmount > 256 * 1024) {
+            if (channel.readyState !== 'open') {
+              throw new Error(`대기 중 채널 닫힘 (상태: ${channel.readyState})`)
+            }
+            await new Promise(resolve => setTimeout(resolve, 10))
+          }
+
+          // 결합된 버퍼 전송
           try {
+            if (channel.readyState !== 'open') {
+              throw new Error(`채널이 닫혔습니다 (상태: ${channel.readyState})`)
+            }
+
             channel.send(combinedBuffer)
+            actualSentChunks++
+
+            if (actualSentChunks <= 10) {
+              console.log(`[#16-send] 청크 ${chunkIndex} 전송, bufferedAmount=${(channel.bufferedAmount / 1024).toFixed(1)}KB`)
+            }
           } catch (error) {
-            console.error(`[#16] 청크 전송 실패 (index: ${i}):`, error)
+            console.error(`[#16] 청크 전송 실패 (index: ${chunkIndex}):`, error)
             throw error
           }
 
+          // 청크 인덱스 증가
+          currentChunkIndex++ // 다음 청크로 이동
+
+          // Flow control 3: 매 청크마다 버퍼 체크 (오버플로우 방지)
+          const BUFFER_CRITICAL = 512 * 1024 // 512KB
+
+          if (channel.bufferedAmount > BUFFER_CRITICAL) {
+            const postSendWaitStart = Date.now()
+            let logCount = 0
+            console.log(`[#16-buf-post] 버퍼 대기 시작 (청크 ${chunkIndex} 후): ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB`)
+
+            while (channel.bufferedAmount > BUFFER_LOW_WATERMARK) {
+              // 채널 상태 확인
+              if (channel.readyState !== 'open') {
+                throw new Error(`대기 중 채널 닫힘 (상태: ${channel.readyState})`)
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
+              logCount++
+
+              // 1초마다 로깅
+              if (logCount % 10 === 0) {
+                console.log(`[#16-buf-post] 버퍼 대기 중... ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB, ${Date.now() - postSendWaitStart}ms`)
+              }
+
+              // 타임아웃 (30초)
+              if (Date.now() - postSendWaitStart > 30000) {
+                console.warn(`[#16-buf-post] 버퍼 타임아웃 - 계속 진행 (buffered: ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB)`)
+                break
+              }
+
+              // 취소 확인
+              if (checkCancelled && checkCancelled()) {
+                throw new Error('전송 취소됨')
+              }
+            }
+
+            console.log(`[#16-buf-post] 버퍼 대기 완료: ${Date.now() - postSendWaitStart}ms, 남은 버퍼=${(channel.bufferedAmount / 1024).toFixed(1)}KB`)
+          }
+
           // UI 업데이트 최적화: 100청크마다만 업데이트
-          const shouldUpdate = (i + 1) % 100 === 0 || i === totalChunks - 1
-          updateProgress(transferKey, i + 1, shouldUpdate)
+          const shouldUpdate = (chunkIndex + 1) % 100 === 0 || chunkIndex === totalChunks - 1
+          const sentBytes = Math.min(currentChunkIndex * CHUNK_SIZE, fileSize)
+          updateProgress(transferKey, chunkIndex + 1, shouldUpdate, sentBytes)
 
           // 진행 상황 콜백
           if (onProgress) {
-            onProgress(end, fileData.byteLength)
+            onProgress(sentBytes, fileSize)
           }
 
           // 로그 최적화: 100청크마다만 출력
           if (shouldUpdate) {
-            console.log(`[#16] P2P 전송: ${i + 1}/${totalChunks} (${(((i + 1) / totalChunks) * 100).toFixed(0)}%), buffered: ${(channel.bufferedAmount / 1024).toFixed(0)}KB`)
+            console.log(`[#16] P2P 전송: ${chunkIndex + 1}/${totalChunks} (${(((chunkIndex + 1) / totalChunks) * 100).toFixed(0)}%), buffered: ${(channel.bufferedAmount / 1024).toFixed(0)}KB`)
           }
         }
       } finally {
@@ -489,12 +633,19 @@ export function useDirectFileTransfer(
         console.log(`[#16] 완료 메시지 전송 (실제전송=${actualSentChunks}, 스킵=${skippedChunks}, 전체=${totalChunks})`)
       } else {
         console.log(`[#16] ⚠️ 전송할 청크 없음 - 수신자가 이미 모두 보유 (스킵=${skippedChunks}, 전체=${totalChunks})`)
-        // 채널 닫지 않고 열어둠 - 수신자가 아직 완료 안됐을 수 있음
+
+        // Complete 메시지는 보내서 수신자가 완료 처리하도록 함
+        const completeMsg: CompleteMessage = { type: 'complete' }
+        channel.send(JSON.stringify(completeMsg))
+        console.log(`[#16] 완료 메시지 전송 (스킵만)`)
+
+        completeTransfer(transferKey)
+        cleanup(connectionId)
         return
       }
 
       const transferElapsed = performance.now() - transferStartTime
-      const speedMBps = (fileData.byteLength / 1024 / 1024) / (transferElapsed / 1000)
+      const speedMBps = (fileSize / 1024 / 1024) / (transferElapsed / 1000)
 
       if (skippedChunks > 0) {
         console.log(`[#17] P2P 전송 완료 (이어받기: ${skippedChunks}개 건너뜀) - ${transferElapsed.toFixed(0)}ms, ${speedMBps.toFixed(2)} MB/s`)
@@ -525,14 +676,17 @@ export function useDirectFileTransfer(
       unregisterDataChannel(targetUuid)
       cleanup(connectionId)
     } catch (error) {
-      console.error(`[P2P] 전송 실패:`, error)
+      console.error(`[P2P] 전송 실패 (${transferKey}):`, error)
+      console.error(`[P2P] 에러 스택:`, error instanceof Error ? error.stack : '스택 없음')
       cancelProgress(transferKey)
+      console.log(`[#15] unregisterDataChannel 호출: ${targetUuid}`)
       unregisterDataChannel(targetUuid)
       cancelTransfer(fileId, targetUuid, error instanceof Error ? error.message : '알 수 없는 오류')
       throw error
     } finally {
       // 전송 완료 또는 실패 시 상태 제거
       activeTransfers.delete(transferKey)
+      console.log(`[#17-cleanup] 전송 상태 제거: ${transferKey}`)
     }
   }
 
@@ -589,11 +743,12 @@ export function useDirectFileTransfer(
           }
 
           if (hasAllChunks && chunks.length === offer.totalChunks) {
-            console.log(`[#18-complete] 🎉 모든 청크 데이터 확인 - 바로 반환`)
+            console.log(`[#18-complete] 🎉 모든 청크 데이터 확인 - 채널 생성 없이 바로 반환`)
             const blob = new Blob(chunks, { type: meta?.type || 'application/octet-stream' })
             await cacheFile(offer.fileId, blob)
             await deleteDownloadState(offer.fileId)
             activeTransfers.delete(transferKey)
+            console.log(`[#18-complete] 이미 완료된 파일 반환 완료 - 채널 생성 스킵`)
             return blob
           } else {
             console.warn(`[#18-complete] 실제 청크: ${chunks.length}/${offer.totalChunks} - 메타데이터 수정 후 이어받기`)
@@ -603,7 +758,12 @@ export function useDirectFileTransfer(
         }
 
         startTransfer(transferKey, meta?.name || offer.fileId, 'download', offer.totalChunks, offer.fileSize, true)
-        updateProgress(transferKey, partialState.receivedChunks.size)
+        // 실제 받은 바이트 계산 (각 청크의 실제 크기 합산)
+        let receivedBytes = 0
+        for (const chunk of partialState.chunks.values()) {
+          receivedBytes += chunk.byteLength
+        }
+        updateProgress(transferKey, partialState.receivedChunks.size, false, receivedBytes)
       } else {
         console.log(`[#18-1] ℹ️ 처음 받는 파일 (fileId: ${offer.fileId})`)
         startTransfer(transferKey, meta?.name || offer.fileId, 'download', offer.totalChunks, offer.fileSize)
@@ -613,7 +773,7 @@ export function useDirectFileTransfer(
           fileId: offer.fileId,
           fileName: meta?.name || offer.fileId,
           totalChunks: offer.totalChunks,
-          chunkSize: CHUNK_SIZE,
+          chunkSize: CHUNK_SIZE, // 고정 64KB
           totalBytes: offer.fileSize,
           receivedChunks: new Set(),
           chunks: new Map(),
@@ -633,6 +793,7 @@ export function useDirectFileTransfer(
           type: 'start',
           totalChunks: offer.totalChunks,
           fileSize: offer.fileSize,
+          chunkSize: partialState!.chunkSize, // 현재 상태의 청크 크기
           hasPartialData: hasPartialData
         }
         channel.send(JSON.stringify(startResponseMsg))
@@ -651,10 +812,16 @@ export function useDirectFileTransfer(
 
       // 채널 열릴 때까지 대기
       if (channel.readyState !== 'open') {
+        console.log(`[#18] 채널 열림 대기 중... (현재 상태: ${channel.readyState})`)
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('채널 열림 타임아웃')), 10000)
+          const timeout = setTimeout(() => {
+            console.error(`[#18] 채널 열림 타임아웃 (30초) - 상태: ${channel.readyState}`)
+            reject(new Error('채널 열림 타임아웃'))
+          }, 30000)
+
           const openHandler = () => {
             clearTimeout(timeout)
+            console.log(`[#18] 채널 열림 성공`)
             sendStartAndResumeInfo() // 채널 열리면 시작+이어받기 정보 전송
             resolve()
           }
@@ -662,9 +829,9 @@ export function useDirectFileTransfer(
             clearTimeout(timeout)
             console.error('[#18] 채널 열기 실패:', error)
             if (error instanceof RTCErrorEvent) {
-              console.error(`[#18] RTCErrorEvent - errorDetail: ${error.error?.errorDetail}, message: ${error.error?.message}`)
+              console.error(`[#18] 상세: ${error.error?.errorDetail}, ${error.error?.message}`)
             }
-            reject(new Error('채널 에러'))
+            reject(new Error(`채널 에러: ${error instanceof RTCErrorEvent ? error.error?.message : '알 수 없음'}`))
           }
           channel.addEventListener('open', openHandler, { once: true })
           channel.addEventListener('error', errorHandler, { once: true })
@@ -673,19 +840,13 @@ export function useDirectFileTransfer(
         sendStartAndResumeInfo() // 이미 열려있으면 즉시 전송
       }
 
-      // 청크 수신
+      // 청크 수신 (메모리 효율 - 즉시 DB 저장)
       return new Promise<Blob>(async (resolve, reject) => {
-        const chunks = new Array<ArrayBuffer | null>(offer.totalChunks)
         let pendingSaveChunks = 0 // 저장되지 않은 청크 수
         const pendingChunksBuffer = new Map<number, ArrayBuffer>() // 배치 저장용 버퍼
         let isSaving = false // DB 저장 중 플래그
 
-        // 기존에 받은 청크 복원
-        if (partialState) {
-          for (const [index, buffer] of partialState.chunks.entries()) {
-            chunks[index] = buffer
-          }
-        }
+        // 메모리에 청크 배열 생성하지 않음 - IndexedDB에만 저장
 
         channel.onmessage = async (event) => {
           if (typeof event.data === 'string') {
@@ -732,16 +893,67 @@ export function useDirectFileTransfer(
                   return
                 }
 
-                // Blob 생성 - 모든 청크가 순서대로 있는지 확인 (ordered: false 환경)
+                // 최종 저장 먼저 수행
+                if (pendingChunksBuffer.size > 0) {
+                  console.log(`[#19-complete] 최종 청크 저장 중: ${pendingChunksBuffer.size}개`)
+                  await saveChunksBatch(offer.fileId, pendingChunksBuffer)
+                  await saveDownloadState(partialState!)
+                }
+
+                console.log(`[#19-complete] 전체 상태에서 청크 로드 중...`)
+                // DB에서 전체 상태 다시 로드 (메모리에서 제거된 청크들 포함)
+                const { loadDownloadState: reloadState } = useFileTransferState()
+                const fullState = await reloadState(offer.fileId)
+
+                if (!fullState) {
+                  reject(new Error('완료 후 상태 로드 실패'))
+                  return
+                }
+
+                // 청크 검증: 실제 데이터가 있는지 확인하고 누락된 청크 찾기
+                const missingChunks: number[] = []
+                for (let i = 0; i < offer.totalChunks; i++) {
+                  const chunk = fullState.chunks.get(i)
+                  if (!chunk) {
+                    missingChunks.push(i)
+                    // 메타데이터에서도 제거 (다음 재요청에 반영)
+                    partialState!.receivedChunks.delete(i)
+                  }
+                }
+
+                // 누락된 청크가 있으면 재요청
+                if (missingChunks.length > 0) {
+                  console.warn(`[#19-reRequest] 청크 누락 감지: ${missingChunks.length}개 (예: ${missingChunks.slice(0, 10).join(', ')}${missingChunks.length > 10 ? '...' : ''})`)
+
+                  // 메타데이터 업데이트 저장
+                  await saveDownloadState(partialState!)
+
+                  // 재요청 메시지 전송 (송신자에게 누락 청크 알림)
+                  const reRequestMsg = {
+                    type: 'reRequest',
+                    missingChunks: missingChunks
+                  }
+
+                  if (channel.readyState === 'open') {
+                    channel.send(JSON.stringify(reRequestMsg))
+                    console.log(`[#19-reRequest] 재요청 메시지 전송: ${missingChunks.length}개 청크`)
+                  } else {
+                    console.error(`[#19-reRequest] 채널 닫혀서 재요청 불가 - 상태: ${channel.readyState}`)
+                    await saveDownloadState(partialState!)
+                    reject(new Error(`청크 ${missingChunks.length}개 누락 (채널 닫힘)`))
+                  }
+
+                  // complete 처리 중단 - 재전송 대기
+                  return
+                }
+
+                // Blob 생성 - DB에서 로드한 전체 청크 사용
                 const validChunks: ArrayBuffer[] = []
                 for (let i = 0; i < offer.totalChunks; i++) {
-                  if (!chunks[i]) {
-                    await saveDownloadState(partialState!)
-                    reject(new Error(`청크 ${i}가 누락되었습니다 (받은: ${partialState!.receivedChunks.size}/${offer.totalChunks})`))
-                    return
-                  }
-                  validChunks.push(chunks[i]!)
+                  const chunk = fullState.chunks.get(i)!
+                  validChunks.push(chunk)
                 }
+                console.log(`[#19-complete] Blob 생성 중: ${validChunks.length}개 청크`)
                 const blob = new Blob(validChunks, { type: meta?.type || 'application/octet-stream' })
 
                 const receiveElapsed = performance.now() - receiveStartTime
@@ -756,8 +968,12 @@ export function useDirectFileTransfer(
                   completeTransfer(transferKey)
                   channel.close()
                   setTimeout(() => cleanup(connectionId), 1000)
+                  activeTransfers.delete(transferKey)
+                  console.log(`[#19-cleanup] 수신 상태 제거 (완료): ${transferKey}`)
                   resolve(blob)
                 } catch (error) {
+                  activeTransfers.delete(transferKey)
+                  console.log(`[#19-cleanup] 수신 상태 제거 (캐시 실패): ${transferKey}`)
                   reject(error)
                 }
                 break
@@ -771,10 +987,12 @@ export function useDirectFileTransfer(
                 }
                 channel.close()
                 cleanup(connectionId)
+                activeTransfers.delete(transferKey)
+                console.log(`[#19-cleanup] 수신 상태 제거 (에러 메시지): ${transferKey}`)
                 reject(new Error(msg.message))
                 break
             }
-          } else {
+          } else if (event.data instanceof ArrayBuffer) {
             // ArrayBuffer - 결합된 버퍼 (인덱스 4바이트 + 청크 데이터)
             const buffer = event.data as ArrayBuffer
 
@@ -790,7 +1008,7 @@ export function useDirectFileTransfer(
 
             // Guard: 청크 인덱스 유효성 검증
             if (chunkIndex < 0 || chunkIndex >= offer.totalChunks) {
-              console.warn(`[DirectTransfer] 잘못된 청크 인덱스: ${chunkIndex}`)
+              console.warn(`[DirectTransfer] 잘못된 청크 인덱스: ${chunkIndex} (totalChunks: ${offer.totalChunks})`)
               return
             }
 
@@ -802,19 +1020,19 @@ export function useDirectFileTransfer(
               // 데이터 추출 (4바이트 이후)
               const chunkData = buffer.slice(4)
 
-              // 청크 저장 (메모리에만, DB 저장은 배치로)
-              chunks[chunkIndex] = chunkData
+              // 수신 확인 (메타데이터만 메모리, 실제 데이터는 DB로)
               partialState!.receivedChunks.add(chunkIndex)
-              partialState!.chunks.set(chunkIndex, chunkData)
               partialState!.timestamp = Date.now()
 
-              // 배치 버퍼에 추가
+              // 배치 버퍼에 추가 (DB 저장 대기)
               pendingChunksBuffer.set(chunkIndex, chunkData)
               pendingSaveChunks++
 
               // UI 업데이트 최적화: 100청크마다만 업데이트
               shouldUpdate = partialState!.receivedChunks.size % 100 === 0 || isDownloadComplete(partialState!)
-              updateProgress(transferKey, partialState!.receivedChunks.size, shouldUpdate)
+              // 실제 받은 바이트 추적 (청크 크기 * 개수)
+              const receivedBytes = partialState!.receivedChunks.size * CHUNK_SIZE
+              updateProgress(transferKey, partialState!.receivedChunks.size, shouldUpdate, receivedBytes)
             } else {
               console.log(`[#20-dup] 중복 청크 수신: ${chunkIndex} - ACK는 재전송`)
             }
@@ -854,9 +1072,12 @@ export function useDirectFileTransfer(
             }
 
             // 메타데이터 저장 (10개마다) - 가볍고 빠름, 새로고침 시 이어받기 가능
-            if (!isDuplicate && partialState!.receivedChunks.size % DB_SAVE_META_INTERVAL === 0) {
+            if (!isDuplicate && !isSaving && partialState!.receivedChunks.size % DB_SAVE_META_INTERVAL === 0) {
+              isSaving = true
               saveDownloadState(partialState!).catch(err => {
                 console.warn('[#20-meta] 메타데이터 저장 실패:', err)
+              }).finally(() => {
+                isSaving = false
               })
             }
 
@@ -906,6 +1127,8 @@ export function useDirectFileTransfer(
               await saveDownloadState(partialState!)
             }
             cleanup(connectionId)
+            activeTransfers.delete(transferKey)
+            console.log(`[#19-cleanup] 수신 상태 제거 (채널 닫힘): ${transferKey}`)
             reject(new Error('채널이 완료 전에 닫혔습니다'))
           }
         }
@@ -914,11 +1137,11 @@ export function useDirectFileTransfer(
       console.error(`[P2P] 수신 실패:`, error)
       cancelProgress(transferKey)
       cleanup(connectionId)
-      throw error
-    } finally {
-      // 수신 완료 또는 실패 시 상태 제거
       activeTransfers.delete(transferKey)
+      console.log(`[#19-cleanup] 수신 상태 제거 (에러): ${transferKey}`)
+      throw error
     }
+    // finally 제거 - Promise가 resolve/reject될 때 cleanup 호출됨
   }
 
   return {

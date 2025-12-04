@@ -30,7 +30,7 @@ const groupedTransfers = computed(() => {
       count: transfers.length,
       type: first.type,
       totalBytes: first.totalBytes,
-      avgProgress: transfers.reduce((sum, t) => sum + (t.receivedChunks / t.totalChunks), 0) / transfers.length * 100,
+      avgProgress: transfers.reduce((sum, t) => sum + (t.receivedBytes / t.totalBytes), 0) / transfers.length * 100,
     }
   }).filter((g): g is NonNullable<typeof g> => g !== null)
 })
@@ -38,8 +38,8 @@ const groupedTransfers = computed(() => {
 const hasActiveTransfers = computed(() => activeTransfers.value.length > 0)
 const hasQueue = computed(() => uploadQueueInfo.queuedCount > 0)
 
-const formatProgress = (transfer: { receivedChunks: number; totalChunks: number }) => {
-  const percent = (transfer.receivedChunks / transfer.totalChunks * 100).toFixed(0)
+const formatProgress = (transfer: { receivedBytes: number; totalBytes: number }) => {
+  const percent = (transfer.receivedBytes / transfer.totalBytes * 100).toFixed(0)
   return `${percent}%`
 }
 

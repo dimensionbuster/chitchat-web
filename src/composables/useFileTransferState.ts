@@ -15,9 +15,6 @@ const DB_VERSION = 2 // 버전 업그레이드 (새로운 스키마)
 const STORE_NAME = 'downloads'
 const CHUNKS_STORE_NAME = 'chunks' // 청크 전용 스토어
 
-// IndexedDB 연결 (싱글톤)
-let dbPromise: Promise<IDBDatabase> | null = null
-
 // IndexedDB에 저장되는 메타데이터 구조 (청크 제외)
 interface StoredDownloadState {
   fileId: string
@@ -39,34 +36,31 @@ interface StoredChunk {
 }
 
 /**
- * IndexedDB 초기화
+ * IndexedDB 초기화 (매번 새 연결 생성 - closing 에러 방지)
  */
-async function getDB() {
-  if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION)
+async function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION)
 
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => resolve(request.result)
 
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result
-        const oldVersion = event.oldVersion
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result
+      const oldVersion = event.oldVersion
 
-        // 메타데이터 스토어
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME, { keyPath: 'fileId' })
-        }
-
-        // 청크 스토어 (버전 2부터)
-        if (oldVersion < 2 && !db.objectStoreNames.contains(CHUNKS_STORE_NAME)) {
-          const chunksStore = db.createObjectStore(CHUNKS_STORE_NAME, { keyPath: 'key' })
-          chunksStore.createIndex('fileId', 'fileId', { unique: false })
-        }
+      // 메타데이터 스토어
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'fileId' })
       }
-    })
-  }
-  return dbPromise
+
+      // 청크 스토어 (버전 2부터)
+      if (oldVersion < 2 && !db.objectStoreNames.contains(CHUNKS_STORE_NAME)) {
+        const chunksStore = db.createObjectStore(CHUNKS_STORE_NAME, { keyPath: 'key' })
+        chunksStore.createIndex('fileId', 'fileId', { unique: false })
+      }
+    }
+  })
 }
 
 /**
@@ -79,7 +73,7 @@ export function useFileTransferState() {
    */
   async function saveDownloadState(state: PartialDownloadState) {
     try {
-      const db = await getDB()
+      const db = await openDB()
 
       // 메타데이터만 저장 (청크 제외)
       const metadata: StoredDownloadState = {
@@ -112,7 +106,7 @@ export function useFileTransferState() {
    */
   async function saveChunk(fileId: string, chunkIndex: number, data: ArrayBuffer) {
     try {
-      const db = await getDB()
+      const db = await openDB()
 
       const chunk: StoredChunk = {
         key: `${fileId}-${chunkIndex}`,
@@ -142,7 +136,7 @@ export function useFileTransferState() {
     if (chunks.size === 0) return
 
     try {
-      const db = await getDB()
+      const db = await openDB()
       const tx = db.transaction(CHUNKS_STORE_NAME, 'readwrite')
       const store = tx.objectStore(CHUNKS_STORE_NAME)
 
@@ -171,7 +165,7 @@ export function useFileTransferState() {
    */
   async function loadDownloadState(fileId: string): Promise<PartialDownloadState | null> {
     try {
-      const db = await getDB()
+      const db = await openDB()
 
       // 메타데이터 로드
       const metaTx = db.transaction(STORE_NAME, 'readonly')
@@ -227,7 +221,7 @@ export function useFileTransferState() {
    * 다운로드 상태 삭제 (메타데이터 + 모든 청크)
    */
   async function deleteDownloadState(fileId: string) {
-    const db = await getDB()
+    const db = await openDB()
 
     // 트랜잭션 하나로 메타데이터와 청크 모두 삭제
     const tx = db.transaction([STORE_NAME, CHUNKS_STORE_NAME], 'readwrite')
@@ -259,7 +253,7 @@ export function useFileTransferState() {
    * 모든 다운로드 상태 조회 (청크는 로드하지 않고 메타데이터만)
    */
   async function getAllDownloadStates(): Promise<PartialDownloadState[]> {
-    const db = await getDB()
+    const db = await openDB()
     const tx = db.transaction(STORE_NAME, 'readonly')
     const store = tx.objectStore(STORE_NAME)
     const request = store.getAll()

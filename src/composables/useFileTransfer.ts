@@ -222,19 +222,29 @@ export function useFileTransfer(
         const request = state.fileRequest as FileRequest | undefined
 
         // Guard: 요청이 없거나 내가 요청한 경우 스킵
-        if (!request || request.requesterUuid === myUuid) continue
+        if (!request) continue
+        if (request.requesterUuid === myUuid) {
+          console.log(`[FileTransfer] 자신의 요청 무시: ${request.fileId}`)
+          continue
+        }
 
         // Guard: 타겟이 지정되어 있는데 내가 아닌 경우 스킵
-        if (request.targetUuid && request.targetUuid !== myUuid) continue
+        if (request.targetUuid && request.targetUuid !== myUuid) {
+          console.log(`[FileTransfer] 타겟 불일치 - 요청 타겟: ${request.targetUuid?.slice(-8)}, 내 UUID: ${myUuid.slice(-8)}`)
+          continue
+        }
 
         // Guard: 이미 처리한 요청인 경우 스킵
         const requestId = `${request.fileId}-${request.requesterUuid}-${request.timestamp}`
-        if (processedRequests.value.has(requestId)) continue
+        if (processedRequests.value.has(requestId)) {
+          console.log(`[FileTransfer] 이미 처리한 요청: ${requestId}`)
+          continue
+        }
 
         processedRequests.value.add(requestId)
         setTimeout(() => processedRequests.value.delete(requestId), 5000)
 
-        console.log(`[FileTransfer] 파일 요청 처리: ${request.fileId} from ${request.requesterUuid.slice(-8)}`)
+        console.log(`[FileTransfer] 파일 요청 처리 시작: ${request.fileId} from ${request.requesterUuid.slice(-8)}, target: ${request.targetUuid?.slice(-8) || 'none'}`)
         await handleFileRequest(request.fileId, request.requesterUuid, request.receivedChunks || [])
       }
     })

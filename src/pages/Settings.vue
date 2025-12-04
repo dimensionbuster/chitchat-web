@@ -7,6 +7,7 @@ export default {
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useStyleSettings, type ColorSettings } from '../composables/useStyleSettings'
+import { useNotificationSound } from '../composables/useNotificationSound'
 
 type BackgroundType = 'home' | 'chat' | 'notification'
 
@@ -25,6 +26,20 @@ const {
   DEFAULT_COLORS,
   COLOR_TEMPLATES
 } = useStyleSettings()
+
+// Notification sound settings
+const {
+  volume: notificationVolume,
+  isEnabled: notificationEnabled,
+  customSoundUrl,
+  hasCustomSound,
+  isElectron: soundIsElectron,
+  setVolume: setNotificationVolume,
+  setEnabled: setNotificationEnabled,
+  selectAndSetCustomSound,
+  removeCustomSound,
+  testSound
+} = useNotificationSound()
 
 // Background image previews
 const backgroundPreviews = ref<Record<BackgroundType, string | null>>({
@@ -105,6 +120,41 @@ function closeSettings() {
   window.close()
 }
 
+// Notification sound functions
+const isLoadingSound = ref(false)
+
+async function selectNotificationSound() {
+  isLoadingSound.value = true
+  try {
+    const success = await selectAndSetCustomSound()
+    if (!success) {
+      await window.electronApi?.showDialog('소리 파일을 선택할 수 없습니다.')
+    }
+  } catch (e) {
+    console.error('Failed to select notification sound:', e)
+  } finally {
+    isLoadingSound.value = false
+  }
+}
+
+async function clearNotificationSound() {
+  try {
+    await removeCustomSound()
+  } catch (e) {
+    console.error('Failed to clear notification sound:', e)
+  }
+}
+
+function handleVolumeChange(event: Event) {
+  const value = (event.target as HTMLInputElement).valueAsNumber / 100
+  setNotificationVolume(value)
+}
+
+function handleEnabledChange(event: Event) {
+  const enabled = (event.target as HTMLInputElement).checked
+  setNotificationEnabled(enabled)
+}
+
 // Reset all settings
 async function handleResetAll() {
   await resetToDefaults()
@@ -121,6 +171,10 @@ async function handleResetAll() {
       }
     }
   }
+  // Reset notification sound
+  await setNotificationVolume(0.5)
+  await setNotificationEnabled(true)
+  await removeCustomSound()
 }
 
 // Computed values for display
@@ -250,7 +304,7 @@ onMounted(async () => {
     <div class="settings-container">
       <!-- Header -->
       <div class="settings-header">
-        <h1>스타일 설정</h1>
+        <h1>설정</h1>
         <button class="close-btn" @click="closeSettings">
           <span>✕</span>
         </button>
@@ -296,6 +350,81 @@ onMounted(async () => {
                   @click="clearBackground(type)"
                 >
                   초기화
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Notification Sound Section -->
+        <section class="settings-section">
+          <h2>알림 소리</h2>
+          <p class="section-description">새 메시지가 도착할 때 재생되는 알림 소리를 설정합니다.</p>
+
+          <div class="sound-settings">
+            <!-- Enable/Disable -->
+            <div class="sound-group">
+              <div class="sound-header">
+                <label class="sound-toggle-label">
+                  <input
+                    type="checkbox"
+                    :checked="notificationEnabled"
+                    @change="handleEnabledChange"
+                    class="sound-checkbox"
+                  />
+                  <span>알림 소리 활성화</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Volume Control -->
+            <div class="sound-group" v-if="notificationEnabled">
+              <div class="opacity-header">
+                <label>음량</label>
+                <span class="opacity-value">{{ Math.round(notificationVolume * 100) }}%</span>
+              </div>
+              <div class="slider-container">
+                <span class="slider-label">🔇</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  :value="Math.round(notificationVolume * 100)"
+                  @input="handleVolumeChange"
+                  class="slider"
+                />
+                <span class="slider-label">🔊</span>
+              </div>
+            </div>
+
+            <!-- Custom Sound File -->
+            <div class="sound-group" v-if="notificationEnabled">
+              <div class="sound-file-header">
+                <label>알림 소리 파일</label>
+                <span class="sound-file-status">
+                  {{ hasCustomSound ? '커스텀 소리 사용 중' : '기본 소리 사용 중 (nope.mp3)' }}
+                </span>
+              </div>
+              <div class="sound-file-actions">
+                <button
+                  class="btn-select"
+                  :disabled="isLoadingSound || !soundIsElectron"
+                  @click="selectNotificationSound"
+                >
+                  {{ isLoadingSound ? '선택 중...' : '소리 파일 선택' }}
+                </button>
+                <button
+                  class="btn-clear"
+                  :disabled="!hasCustomSound || !soundIsElectron"
+                  @click="clearNotificationSound"
+                >
+                  기본값으로 초기화
+                </button>
+                <button
+                  class="btn-test"
+                  @click="testSound"
+                >
+                  🔊 테스트
                 </button>
               </div>
             </div>
@@ -666,6 +795,115 @@ onMounted(async () => {
 .btn-clear:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Notification Sound Settings */
+.sound-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.sound-group {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  border: 1px solid var(--border-light);
+}
+
+.sound-header {
+  margin-bottom: 0.5rem;
+}
+
+.sound-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.sound-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.sound-file-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.sound-file-header label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sound-file-status {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-primary);
+  border-radius: var(--radius-sm);
+}
+
+.sound-file-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.sound-file-actions .btn-select,
+.sound-file-actions .btn-clear {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sound-file-actions .btn-select {
+  background: var(--color-primary);
+  color: white;
+}
+
+.sound-file-actions .btn-select:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.sound-file-actions .btn-clear {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.sound-file-actions .btn-clear:hover:not(:disabled) {
+  background: var(--text-muted);
+  color: white;
+}
+
+.btn-test {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-test:hover {
+  background: var(--color-primary);
+  color: white;
 }
 
 /* Opacity Settings */

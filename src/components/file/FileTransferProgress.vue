@@ -31,8 +31,7 @@ const formatSpeed = computed(() => {
   const elapsed = Date.now() - transfer.value.startTime
   if (elapsed < 100) return '' // 너무 빠르면 표시 안 함
 
-  const bytesTransferred =
-    (transfer.value.totalBytes * transfer.value.receivedChunks) / transfer.value.totalChunks
+  const bytesTransferred = transfer.value.receivedBytes
   const speed = bytesTransferred / (elapsed / 1000) // bytes/sec
   const mbps = speed / 1024 / 1024
 
@@ -58,7 +57,7 @@ const formatSpeed = computed(() => {
     <div class="progress-info">
       <span class="file-name">{{ displayName }}</span>
       <span class="chunk-info"
-        >{{ transfer?.receivedChunks }} / {{ transfer?.totalChunks }} 청크</span
+        >{{ (transfer?.receivedBytes! / 1024 / 1024).toFixed(1) }}MB / {{ (transfer?.totalBytes! / 1024 / 1024).toFixed(1) }}MB</span
       >
     </div>
   </div>

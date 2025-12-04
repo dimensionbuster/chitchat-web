@@ -145,6 +145,7 @@ class GlobalDataChannelQueueManager {
    * 데이터 채널 등록 (피어별)
    */
   registerDataChannel(peerId: string, channel: RTCDataChannel) {
+    console.log(`[Queue] 채널 등록: peerId=${peerId}, 상태=${channel.readyState}`)
     this.dataChannels.set(peerId, channel)
 
     // 버퍼 임계값 설정
@@ -156,6 +157,7 @@ class GlobalDataChannelQueueManager {
     })
 
     channel.addEventListener('close', () => {
+      console.log(`[Queue] 채널 close 이벤트: peerId=${peerId}`)
       this.dataChannels.delete(peerId)
       // 해당 피어로 전송 중이던 작업 실패 처리
       this.cancelJobsForPeer(peerId)

@@ -7,6 +7,7 @@ import { useFileTransfer } from '../composables/useFileTransfer'
 import { useImageAutoLoader } from '../composables/useImageAutoLoader'
 import { useFileActions } from '../composables/useFileActions'
 import { useNotification } from '../composables/useNotification'
+import { useNotificationSound } from '../composables/useNotificationSound'
 import { useGlobalDataChannelQueue } from '../composables/useGlobalDataChannelQueue'
 import { useProfilePicture } from '../composables/useProfilePicture'
 import { useBackgroundImage } from '../composables/useBackgroundImage'
@@ -60,6 +61,9 @@ const { setupFileRequestListener, requestFileP2P, registerFileAvailability } = u
 const { imageUrls, loadingImages, failedDownloads, downloadImage, processAutoDownload } = useImageAutoLoader(files, requestFileP2P)
 const { downloadFile } = useFileActions(files, requestFileP2P)
 const { showNotification } = useNotification()
+
+// 알림 소리
+const { playSound } = useNotificationSound()
 
 // 프로필 사진 기능
 const {
@@ -334,6 +338,8 @@ watch(messagesRef, async (newMessages) => {
       const text = newMessage.text || '파일을 전송했습니다'
       console.log('[알림] 새 메시지:', { authorName, text, totalCount: currentTotalCount })
       showNotification(authorName, text, newMessage.id, activeRoomId)
+      // 알림 소리 재생
+      playSound()
     }
   }
   previousTotalMessageCount = currentTotalCount

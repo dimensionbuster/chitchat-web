@@ -158,19 +158,19 @@ function getPriorityLabel(priority: number): string {
               </div>
               <div class="job-name">{{ transfer.fileName }}</div>
               <div class="job-progress-text">
-                {{ transfer.isComplete ? '완료' : ((transfer.receivedChunks / transfer.totalChunks) * 100).toFixed(0) + '%' }}
+                {{ transfer.isComplete ? '완료' : ((transfer.receivedBytes / transfer.totalBytes) * 100).toFixed(0) + '%' }}
               </div>
             </div>
             <div class="progress-bar-wrapper">
               <div
                 class="progress-bar-fill"
                 :class="{ completed: transfer.isComplete }"
-                :style="{ width: ((transfer.receivedChunks / transfer.totalChunks) * 100) + '%' }"
+                :style="{ width: ((transfer.receivedBytes / transfer.totalBytes) * 100) + '%' }"
               ></div>
             </div>
             <div class="job-details">
               <span class="chunk-info">
-                {{ transfer.receivedChunks }} / {{ transfer.totalChunks }} 청크
+                {{ formatBytes(transfer.receivedBytes) }} / {{ formatBytes(transfer.totalBytes) }}
               </span>
               <span class="job-size">{{ formatBytes(transfer.totalBytes) }}</span>
             </div>

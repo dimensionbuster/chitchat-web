@@ -154,10 +154,11 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
     // PeerConnection 생성
     const pc = createPeerConnection(connectionId, targetUuid, fileId)
 
-    // DataChannel 생성
+    // DataChannel 생성 (느린 네트워크 대응)
     const channel = pc.createDataChannel('file-transfer', {
-      ordered: false, // 순서 보장 안함 - 청크 인덱스로 처리, 패킷 유실 시 블로킹 방지
-      maxPacketLifeTime: 3000,
+      ordered: false, // 순서 무관 (청크 인덱스로 재정렬, 병렬 전송으로 속도 향상)
+      // maxPacketLifeTime 제거 - 느린 네트워크에서 패킷이 버려지는 문제 방지
+      // 대신 무제한 재전송으로 신뢰성 확보
     })
 
     channel.onclose = () => cleanup(connectionId)
@@ -337,7 +338,12 @@ export function useWebrtcConnection(provider: WebrtcProvider, myUuid: string) {
     activeChannels.value.set(connectionId, channel)
 
     // 글로벌 큐 매니저에 채널 등록
-    registerDataChannel(offer.senderUuid, channel)
+    // 방어: senderUuid가 "user-"로 시작하는지 확인
+    const validSenderUuid = offer.senderUuid.startsWith('user-')
+      ? offer.senderUuid
+      : `user-${offer.senderUuid}`
+    console.log(`[WebRTC] 채널 등록: ${validSenderUuid} (원본: ${offer.senderUuid})`)
+    registerDataChannel(validSenderUuid, channel)
 
     // 채널이 열릴 때까지 대기
     if (channel.readyState === 'open') {
