@@ -142,7 +142,14 @@ const handleDrop = async (e: DragEvent) => {
 
 // Handlers
 const handleSend = (message: string) => {
-  if (yjsReady.value) sendTextMessage(me, myName.value, message)
+  if (yjsReady.value) {
+    sendTextMessage(me, myName.value, message)
+    // 본인이 메시지를 보낼 때는 항상 최신 메시지로 이동
+    resetToLatest()
+    nextTick(() => {
+      messageListRef.value?.scrollToBottom()
+    })
+  }
 }
 
 const handleUploadFile = async (file: File) => {
@@ -156,6 +163,11 @@ const handleUploadFile = async (file: File) => {
 
     // 파일 청크 정보를 awareness에 등록 (다른 피어가 받을 수 있도록)
     await registerFileAvailability(fileId)
+
+    // 본인이 파일을 보낼 때는 항상 최신 메시지로 이동
+    resetToLatest()
+    await nextTick()
+    messageListRef.value?.scrollToBottom()
 
     console.log('업로드 완료:', fileId)
   } catch (error) {

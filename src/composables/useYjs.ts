@@ -113,11 +113,8 @@ async function createYjsInstance(roomId: string) {
       sortedMessagesRef.value = [...oldMessages, ...recentMessages]
     }
 
-    // 사용자가 최신 메시지를 보고 있을 때만 자동으로 업데이트
-    if (visibleMessageCount.value >= sortedMessagesRef.value.length ||
-        visibleMessageCount.value === DEFAULT_VISIBLE_MESSAGES) {
-      displayedMessages.value = sortedMessagesRef.value.slice(-visibleMessageCount.value)
-    }
+    // displayedMessages를 항상 업데이트 (알림을 위해 필요)
+    displayedMessages.value = sortedMessagesRef.value.slice(-visibleMessageCount.value)
   }
 
   // 🔥 디바운스된 observe: 연속된 변경사항을 그룹화하여 한 번만 정렬
