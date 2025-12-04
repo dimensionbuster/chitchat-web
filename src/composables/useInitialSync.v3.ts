@@ -342,14 +342,17 @@ export function useInitialSync(
    * 초기 동기화 요청 (새 접속자)
    */
   async function requestInitialSync(): Promise<Uint8Array | null> {
-    console.log('[InitialSync] 초기 동기화 요청')
+    console.log('[InitialSync] 초기 동기화 요청 시작')
+    console.log(`[InitialSync] - 내 UUID: ${myUuid.slice(-8)}`)
+    console.log(`[InitialSync] - 토픽: ${syncTopic}`)
 
     // topic 구독
     signaling.subscribe([syncTopic])
     signaling.on(syncTopic, handleSignalingMessage)
 
-    // 🔥 구독이 서버에 전파될 때까지 대기
-    await new Promise(resolve => setTimeout(resolve, 500))
+    // 🔥 구독이 서버에 전파될 때까지 충분히 대기 (1초)
+    console.log('[InitialSync] 구독 전파 대기 중... (1000ms)')
+    await new Promise(resolve => setTimeout(resolve, 1000))
 
     // 요청 메시지 발행
     const request: SyncRequestMessage = {
@@ -358,23 +361,25 @@ export function useInitialSync(
       timestamp: Date.now(),
     }
 
-    console.log('[InitialSync] 요청 메시지 발행:', syncTopic)
+    console.log('[InitialSync] 📤 요청 메시지 발행:', syncTopic)
     signaling.publish(syncTopic, request as unknown as Record<string, unknown>)
+    console.log('[InitialSync] 응답 대기 중... (타임아웃: 15초)')
 
-    // Offer 대기 (10초)
+    // Offer 대기 (15초)
     return new Promise<Uint8Array | null>((resolve, reject) => {
       syncResolve = resolve
       syncReject = reject
 
       const timeoutId = setTimeout(() => {
         if (syncResolve) {
-          console.log('[InitialSync] Offer 타임아웃 - 빈 채팅방으로 시작')
+          console.warn('[InitialSync] ⏰ Offer 타임아웃 (15초) - 빈 채팅방으로 시작')
+          console.log('[InitialSync] 다른 피어가 없거나 응답하지 않음')
           cleanup()
           resolve(null)
           syncResolve = null
           syncReject = null
         }
-      }, 10000)
+      }, 15000)
 
       // resolve/reject 시 타임아웃 취소
       const originalResolve = syncResolve
@@ -394,20 +399,22 @@ export function useInitialSync(
    * 동기화 요청 처리 (기존 피어)
    */
   async function handleSyncRequest(request: SyncRequestMessage) {
-    console.log(`[InitialSync] 동기화 요청 수신:`, {
+    console.log(`[InitialSync] 📥 동기화 요청 수신:`, {
       from: request.requesterUuid.slice(-8),
       myUuid: myUuid.slice(-8),
-      isSelf: request.requesterUuid === myUuid
+      isSelf: request.requesterUuid === myUuid,
+      timestamp: new Date(request.timestamp).toISOString()
     })
 
     if (request.requesterUuid === myUuid) {
-      console.log('[InitialSync] 자기 자신의 요청 - 무시')
+      console.log('[InitialSync] ↩️ 자기 자신의 요청 - 무시 (정상)')
       return
     }
 
     // 🔥 이미 다른 요청에 응답 중이면 무시 (동시 다중 응답 방지)
     if (peerConnection || dataChannel) {
-      console.log(`[InitialSync] 이미 응답 중 - 요청 무시 from ${request.requesterUuid.slice(-8)}`)
+      console.warn(`[InitialSync] ⚠️ 이미 응답 중 - 요청 무시 from ${request.requesterUuid.slice(-8)}`)
+      console.log(`[InitialSync] - PC 상태: ${peerConnection?.connectionState}, DC 상태: ${dataChannel?.readyState}`)
       return
     }
 
@@ -417,27 +424,33 @@ export function useInitialSync(
       // 스냅샷 생성
       const snapshot = Y.encodeStateAsUpdate(doc)
       const snapshotSize = snapshot.byteLength
+      console.log(`[InitialSync] 스냅샷 생성 완료: ${(snapshotSize / 1024).toFixed(2)}KB`)
 
       if (snapshotSize === 0) {
-        console.log('[InitialSync] 빈 스냅샷 - 응답하지 않음')
+        console.warn('[InitialSync] ⚠️ 빈 스냅샷 (0 bytes) - 응답하지 않음')
+        console.log('[InitialSync] 힌트: 이 피어도 데이터가 없거나 다른 피어가 응답할 것으로 예상')
         return
       }
 
-      console.log(`[InitialSync] 스냅샷 생성: ${(snapshotSize / 1024 / 1024).toFixed(2)}MB`)
+      console.log(`[InitialSync] 📦 전송 준비: ${(snapshotSize / 1024 / 1024).toFixed(2)}MB`)
 
       const totalChunks = Math.ceil(snapshotSize / CHUNK_SIZE)
+      console.log(`[InitialSync] - 총 청크: ${totalChunks}개`)
+      console.log(`[InitialSync] - 청크 크기: ${(CHUNK_SIZE / 1024).toFixed(0)}KB`)
 
       // PeerConnection 생성
       peerConnection = createPeerConnection(request.requesterUuid)
+      console.log(`[InitialSync] PeerConnection 생성 완료`)
 
       // DataChannel 생성 (송신자)
       dataChannel = peerConnection.createDataChannel('initial-sync', {
         ordered: false, // 순서 보장 안함 - 청크 인덱스로 처리, 패킷 유실 시 블로킹 방지
         maxPacketLifeTime: 3000,
       })
+      console.log(`[InitialSync] DataChannel 생성 완료`)
 
       dataChannel.onopen = () => {
-        console.log('[InitialSync] DataChannel 열림 - 청크 전송 시작')
+        console.log('[InitialSync] 🚀 DataChannel 열림 - 청크 전송 시작')
         sendSnapshotChunks(snapshot, totalChunks)
       }
 
@@ -450,6 +463,7 @@ export function useInitialSync(
       // Offer 생성
       const offer = await peerConnection.createOffer()
       await peerConnection.setLocalDescription(offer)
+      console.log('[InitialSync] Offer 생성 완료')
 
       // Offer 전송 (시그널링 서버 경유)
       const offerMessage: SyncOfferMessage = {
@@ -462,13 +476,15 @@ export function useInitialSync(
         timestamp: Date.now(),
       }
 
+      console.log(`[InitialSync] 📤 Offer 전송 to ${request.requesterUuid.slice(-8)}`)
       signaling.publish(syncTopic, offerMessage as unknown as Record<string, unknown>)
-      console.log('[InitialSync] Offer 전송')
+      console.log('[InitialSync] ✅ Offer 발행 완료 - Answer 대기 중...')
 
       // Answer 대기
       // handleSyncAnswer에서 처리됨
     } catch (error) {
-      console.error('[InitialSync] 동기화 응답 실패:', error)
+      console.error('[InitialSync] ❌ 동기화 응답 실패:', error)
+      console.error('[InitialSync] 에러 상세:', error instanceof Error ? error.message : String(error))
       cleanup()
     }
   }
@@ -607,19 +623,30 @@ export function useInitialSync(
    * Offer 처리 (수신자)
    */
   async function handleSyncOffer(offer: SyncOfferMessage) {
-    if (offer.targetUuid !== myUuid) return
+    console.log(`[InitialSync] 📥 Offer 수신:`, {
+      from: offer.senderUuid.slice(-8),
+      target: offer.targetUuid.slice(-8),
+      myUuid: myUuid.slice(-8),
+      isForMe: offer.targetUuid === myUuid
+    })
+
+    if (offer.targetUuid !== myUuid) {
+      console.log(`[InitialSync] ↩️ 다른 피어를 위한 Offer - 무시`)
+      return
+    }
 
     // 🔥 이미 다른 피어로부터 받는 중이면 무시 (첫 번째 응답만 수락)
     if (isReceiving || peerConnection) {
-      console.log(`[InitialSync] 이미 수신 중 - Offer 무시 from ${offer.senderUuid.slice(-8)}`)
+      console.warn(`[InitialSync] ⚠️ 이미 수신 중 - Offer 무시 from ${offer.senderUuid.slice(-8)}`)
+      console.log(`[InitialSync] - isReceiving: ${isReceiving}, PC: ${peerConnection?.connectionState}`)
       return
     }
 
     isReceiving = true
 
-    console.log(`[InitialSync] Offer 수신 from ${offer.senderUuid.slice(-8)}`)
-    console.log(`  - 크기: ${(offer.snapshotSize / 1024 / 1024).toFixed(2)}MB`)
-    console.log(`  - 청크: ${offer.totalChunks}개`)
+    console.log(`[InitialSync] ✅ Offer 수락 from ${offer.senderUuid.slice(-8)}`)
+    console.log(`[InitialSync] - 크기: ${(offer.snapshotSize / 1024 / 1024).toFixed(2)}MB`)
+    console.log(`[InitialSync] - 청크: ${offer.totalChunks}개`)
 
     expectedTotalChunks = offer.totalChunks
     expectedSnapshotSize = offer.snapshotSize
@@ -678,24 +705,41 @@ export function useInitialSync(
    * Answer 처리 (송신자)
    */
   async function handleSyncAnswer(answer: SyncAnswerMessage) {
-    if (answer.targetUuid !== myUuid) return
+    console.log(`[InitialSync] 📥 Answer 수신:`, {
+      from: answer.receiverUuid.slice(-8),
+      target: answer.targetUuid.slice(-8),
+      myUuid: myUuid.slice(-8),
+      isForMe: answer.targetUuid === myUuid
+    })
 
-    console.log(`[InitialSync] Answer 수신 from ${answer.receiverUuid.slice(-8)}`)
+    if (answer.targetUuid !== myUuid) {
+      console.log(`[InitialSync] ↩️ 다른 피어를 위한 Answer - 무시`)
+      return
+    }
+
+    console.log(`[InitialSync] ✅ Answer 처리 시작 from ${answer.receiverUuid.slice(-8)}`)
 
     try {
       if (peerConnection) {
         await peerConnection.setRemoteDescription(answer.sdp)
+        console.log('[InitialSync] Remote description 설정 완료')
 
         // 대기 중인 ICE candidate 추가
-        pendingIceCandidates.forEach((candidate) => {
-          peerConnection?.addIceCandidate(candidate).catch(console.error)
-        })
-        pendingIceCandidates.length = 0
+        if (pendingIceCandidates.length > 0) {
+          console.log(`[InitialSync] 대기 중이던 ICE candidate ${pendingIceCandidates.length}개 추가`)
+          pendingIceCandidates.forEach((candidate) => {
+            peerConnection?.addIceCandidate(candidate).catch(console.error)
+          })
+          pendingIceCandidates.length = 0
+        }
 
-        console.log('[InitialSync] Answer 처리 완료')
+        console.log('[InitialSync] ✅ Answer 처리 완료 - DataChannel 연결 대기 중...')
+      } else {
+        console.warn('[InitialSync] ⚠️ PeerConnection이 없음 - Answer 처리 불가')
       }
     } catch (error) {
-      console.error('[InitialSync] Answer 처리 실패:', error)
+      console.error('[InitialSync] ❌ Answer 처리 실패:', error)
+      console.error('[InitialSync] 에러 상세:', error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -756,11 +800,16 @@ export function useInitialSync(
    * 기존 피어로 초기화 (요청 리스너 등록)
    */
   function initializeAsProvider() {
-    console.log('[InitialSync] 기존 피어로 초기화 - 요청 리스너 등록')
+    console.log('[InitialSync] 📡 기존 피어로 초기화 - 요청 리스너 등록')
+    console.log(`[InitialSync] - 내 UUID: ${myUuid.slice(-8)}`)
+    console.log(`[InitialSync] - 토픽: ${syncTopic}`)
+    console.log(`[InitialSync] - 역할: Provider (새 피어의 요청에 응답 가능)`)
 
     // topic 구독
     signaling.subscribe([syncTopic])
     signaling.on(syncTopic, handleSignalingMessage)
+
+    console.log('[InitialSync] ✅ 리스너 등록 완료 - 요청 대기 중...')
   }
 
   return {

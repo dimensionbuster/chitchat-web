@@ -8,6 +8,7 @@ export interface ElectronApi {
   windowMinimize: () => void
   windowMaximize: () => void
   windowClose: () => void
+  windowDestroy: () => void
   openChatRoom: (roomId: string, userName?: string) => void
   showMainWindow: () => void
   // 커스텀 다이얼로그 API

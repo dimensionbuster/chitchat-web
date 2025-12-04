@@ -22,12 +22,45 @@ const isEnabled = ref<boolean>(true)
 // 오디오 인스턴스
 let audioInstance: HTMLAudioElement | null = null
 
+// BroadcastChannel for cross-window communication
+let broadcastChannel: BroadcastChannel | null = null
+
+// Initialize BroadcastChannel
+try {
+  broadcastChannel = new BroadcastChannel('notification-settings')
+} catch (e) {
+  console.warn('[NotificationSound] BroadcastChannel not supported:', e)
+}
+
 /**
  * 알림 소리 관리 Composable
  */
 export function useNotificationSound() {
   const api = getElectronApi()
   const isElectron = computed(() => !!api)
+
+  /**
+   * 다른 창들에게 설정 변경 알림
+   */
+  function notifySettingsChange() {
+    if (broadcastChannel) {
+      broadcastChannel.postMessage({ type: 'settings-changed' })
+    }
+  }
+
+  /**
+   * 커스텀 소리 URL 다시 로드
+   */
+  async function reloadCustomSound() {
+    if (!api) return
+
+    try {
+      const soundUrl = await api.getNotificationSound?.()
+      customSoundUrl.value = soundUrl || null
+    } catch (error) {
+      console.error('[NotificationSound] Failed to reload custom sound:', error)
+    }
+  }
 
   /**
    * 설정 로드
@@ -83,6 +116,9 @@ export function useNotificationSound() {
     // Electron 환경: 파일 시스템에 저장
     try {
       await api.setNotificationVolume?.(volume.value)
+
+      // 다른 창들에게 설정 변경 알림
+      notifySettingsChange()
     } catch (error) {
       console.error('[NotificationSound] Failed to save volume:', error)
     }
@@ -103,6 +139,9 @@ export function useNotificationSound() {
     // Electron 환경: 파일 시스템에 저장
     try {
       await api.setNotificationEnabled?.(enabled)
+
+      // 다른 창들에게 설정 변경 알림
+      notifySettingsChange()
     } catch (error) {
       console.error('[NotificationSound] Failed to save enabled state:', error)
     }
@@ -120,8 +159,10 @@ export function useNotificationSound() {
     try {
       const success = await api.setNotificationSound?.(audioData)
       if (success) {
-        const soundUrl = await api.getNotificationSound?.()
-        customSoundUrl.value = soundUrl || null
+        await reloadCustomSound()
+
+        // 다른 창들에게 소리 설정 변경 알림 (BroadcastChannel)
+        notifySettingsChange()
       }
       return success || false
     } catch (error) {
@@ -140,6 +181,16 @@ export function useNotificationSound() {
       const success = await api.removeNotificationSound?.()
       if (success) {
         customSoundUrl.value = null
+
+        // 기존 오디오 인스턴스 제거하여 다음 재생 시 새로운 URL로 생성되도록 함
+        if (audioInstance) {
+          audioInstance.pause()
+          audioInstance.src = ''
+          audioInstance = null
+        }
+
+        // 다른 창들에게 소리 설정 변경 알림
+        notifySettingsChange()
       }
       return success || false
     } catch (error) {
@@ -205,6 +256,16 @@ export function useNotificationSound() {
   // 초기화
   onMounted(() => {
     loadSettings()
+
+    // BroadcastChannel 메시지 수신 (다른 창에서 설정 변경 시)
+    if (broadcastChannel) {
+      broadcastChannel.onmessage = async (event) => {
+        if (event.data?.type === 'settings-changed') {
+          // 설정이 변경되었으므로 다시 로드
+          await loadSettings()
+        }
+      }
+    }
   })
 
   return {

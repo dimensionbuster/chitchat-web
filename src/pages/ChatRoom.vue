@@ -263,6 +263,14 @@ const handleGoHome = () => {
   }
 }
 
+const handleCloseChatRoom = () => {
+  // Electron 환경에서만 채팅방을 완전히 닫을 수 있음
+  if (window.electronApi) {
+    // close()가 아니라 destroy()를 호출해야 완전히 닫힙
+    window.electronApi.windowDestroy()
+  }
+}
+
 // 프로필 사진 핸들러
 const handleOpenProfileSettings = () => {
   showProfileModal.value = true
@@ -509,6 +517,7 @@ const handleImportSnapshot = async () => {
       @goHome="handleGoHome"
       @clearChat="handleClearChat"
       @resetAll="handleResetAll"
+      @closeChatRoom="handleCloseChatRoom"
     />
 
     <MessageList

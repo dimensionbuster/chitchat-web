@@ -5,6 +5,7 @@ import StateImportAction from '@/components/drawer/actions/StateImportAction.vue
 import ReloadAction from '@/components/drawer/actions/ReloadAction.vue'
 import ResyncAction from '@/components/drawer/actions/ResyncAction.vue'
 import GoHomeAction from '@/components/drawer/actions/GoHomeAction.vue'
+import CloseChatRoomAction from '@/components/drawer/actions/CloseChatRoomAction.vue'
 
 defineOptions({ name: 'HeaderDrawer' })
 
@@ -21,6 +22,7 @@ const emit = defineEmits<{
   reload: []
   resync: []
   goHome: []
+  closeChatRoom: []
 }>()
 
 const isOpen = ref(false)
@@ -56,6 +58,11 @@ const handleResync = () => {
 
 const handleGoHome = () => {
   emit('goHome')
+  closeDrawer()
+}
+
+const handleCloseChatRoom = () => {
+  emit('closeChatRoom')
   closeDrawer()
 }
 
@@ -132,6 +139,12 @@ const handleOpenSettings = () => {
             <div class="menu-section">
               <div class="section-title">네비게이션</div>
               <GoHomeAction @goHome="handleGoHome" />
+            </div>
+
+            <!-- 채팅방 종료 섹션 (Electron 전용) -->
+            <div v-if="isElectron" class="menu-section">
+              <div class="section-title">채팅방</div>
+              <CloseChatRoomAction @close="handleCloseChatRoom" />
             </div>
           </div>
         </div>

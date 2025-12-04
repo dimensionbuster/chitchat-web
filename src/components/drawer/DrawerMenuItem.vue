@@ -5,6 +5,7 @@ defineProps<{
   icon?: string
   label: string
   variant?: 'default' | 'warning' | 'danger'
+  danger?: boolean // shorthand for variant='danger'
   disabled?: boolean
 }>()
 
@@ -20,7 +21,7 @@ const handleClick = () => {
 <template>
   <button
     class="drawer-menu-item"
-    :class="[`variant-${variant || 'default'}`, { disabled }]"
+    :class="[`variant-${danger ? 'danger' : (variant || 'default')}`, { disabled }]"
     :disabled="disabled"
     @click="handleClick"
   >
