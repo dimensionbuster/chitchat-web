@@ -196,8 +196,8 @@ export function useInitialSync(
       }
 
       // ACK_WINDOW개마다 또는 연속 인덱스가 갱신될 때 ACK 전송
-      const shouldSendAck = 
-        receivedChunks.size % ACK_WINDOW === 0 || 
+      const shouldSendAck =
+        receivedChunks.size % ACK_WINDOW === 0 ||
         consecutiveIndex > lastAckedIndex
 
       if (shouldSendAck && consecutiveIndex > lastAckedIndex) {
@@ -281,8 +281,8 @@ export function useInitialSync(
       }
 
       // 실제 크기와 예상 크기가 다르면 조정
-      const finalSnapshot = actualSize === expectedSnapshotSize 
-        ? merged 
+      const finalSnapshot = actualSize === expectedSnapshotSize
+        ? merged
         : merged.slice(0, actualSize)
 
       console.log(`[InitialSync] 스냅샷 병합 완료: ${(actualSize / 1024 / 1024).toFixed(2)}MB`)
@@ -523,7 +523,7 @@ export function useInitialSync(
 
           while (i - confirmedNextChunk >= ACK_WINDOW && Date.now() - waitStart < ACK_TIMEOUT) {
             await new Promise(resolve => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-            
+
             // 1초마다 상태 로깅
             if ((Date.now() - waitStart) % 1000 < BUFFER_CHECK_INTERVAL) {
               console.log(`[InitialSync-wait] 대기중... ${Date.now() - waitStart}ms, confirmed=${confirmedNextChunk}`)
