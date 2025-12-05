@@ -1,124 +1,85 @@
 /**
  * useStorageChatroomSettings
  *
- * IndexedDB를 사용하여 채팅방 설정을 저장/관리
- * - 채팅방별 설정 저장/조회
- * - JSON 내보내기/가져오기 지원
+ * IndexedDB-based chatroom settings management
+ * - Per-chatroom settings save/retrieve
+ * - JSON export/import support
  */
 
-import type { ChatroomOption } from "@/types/types"
+import type { ChatroomOption } from '@/types/types'
+import { createIndexedDBStore } from '@/util/indexedDB'
+import { createLogger } from '@/util/logger'
 
-const DB_NAME = 'chitchat-chatroom-options'
-const STORE_NAME = 'options'
-const DB_VERSION = 1
+const log = createLogger('StorageChatroomSettings')
 
-let dbPromise: Promise<IDBDatabase> | null = null
+const optionStore = createIndexedDBStore<ChatroomOption>({
+  dbName: 'chitchat-chatroom-options',
+  storeName: 'options',
+})
 
-function getDB() {
-  if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION)
-
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => resolve(request.result)
-
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME)
-        }
-      }
-    })
-  }
-  return dbPromise
-}
-
-export async function saveChatroomOption(roomId: string, option: ChatroomOption) {
+/**
+ * Save chatroom option
+ */
+export async function saveChatroomOption(roomId: string, option: ChatroomOption): Promise<void> {
   try {
-    const db = await getDB()
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    store.put(option, roomId)
-    await new Promise((resolve, reject) => {
-      tx.oncomplete = resolve
-      tx.onerror = () => reject(tx.error)
-    })
-    console.log(`[StorageChatroomSettings] ✅ 옵션 저장: ${roomId}`)
+    await optionStore.set(roomId, option)
+    log.debug(`Option saved: ${roomId}`)
   } catch (error) {
-    console.error('[StorageChatroomSettings] 옵션 저장 실패:', error)
+    log.error('Option save failed:', error)
   }
 }
 
+/**
+ * Get chatroom option
+ */
 export async function getChatroomOption(roomId: string): Promise<ChatroomOption | null> {
   try {
-    const db = await getDB()
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    const request = store.get(roomId)
-
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => {
-        const option = request.result
-        if (option) {
-          console.log(`[StorageChatroomSettings] ✅ 옵션 로드: ${roomId}`)
-        }
-        resolve(option || null)
-      }
-      request.onerror = () => reject(request.error)
-    })
+    const option = await optionStore.get(roomId)
+    if (option) {
+      log.debug(`Option loaded: ${roomId}`)
+    }
+    return option
   } catch (error) {
-    console.error('[StorageChatroomSettings] 옵션 조회 실패:', error)
+    log.error('Option load failed:', error)
     return null
   }
 }
 
+/**
+ * Export all options as JSON
+ */
 export async function exportOptionAsJSON(): Promise<string> {
   try {
-    const db = await getDB()
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    const request = store.getAllKeys()
-
-    const keys: string[] = await new Promise((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result as string[])
-      request.onerror = () => reject(request.error)
-    })
-
+    const keys = await optionStore.getAllKeys()
     const allOptions: Record<string, ChatroomOption> = {}
+
     for (const key of keys) {
-      const getRequest = store.get(key)
-      const option: ChatroomOption = await new Promise((resolve, reject) => {
-        getRequest.onsuccess = () => resolve(getRequest.result)
-        getRequest.onerror = () => reject(getRequest.error)
-      })
-      allOptions[key] = option
+      const option = await optionStore.get(key)
+      if (option) {
+        allOptions[key] = option
+      }
     }
 
     return JSON.stringify(allOptions, null, 2)
   } catch (error) {
-    console.error('[StorageChatroomSettings] 옵션 내보내기 실패:', error)
+    log.error('Option export failed:', error)
     return '{}'
   }
 }
 
-export async function importOptionFromJSON(jsonString: string) {
+/**
+ * Import options from JSON
+ */
+export async function importOptionFromJSON(jsonString: string): Promise<void> {
   try {
     const allOptions: Record<string, ChatroomOption> = JSON.parse(jsonString)
-    const db = await getDB()
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
 
     for (const [key, option] of Object.entries(allOptions)) {
-      store.put(option, key)
+      await optionStore.set(key, option)
     }
 
-    await new Promise((resolve, reject) => {
-      tx.oncomplete = resolve
-      tx.onerror = () => reject(tx.error)
-    })
-
-    console.log('[StorageChatroomSettings] ✅ 옵션 가져오기 완료')
+    log.info('Option import completed')
   } catch (error) {
-    console.error('[StorageChatroomSettings] 옵션 가져오기 실패:', error)
+    log.error('Option import failed:', error)
   }
 }

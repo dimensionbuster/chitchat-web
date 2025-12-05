@@ -318,6 +318,16 @@ const handleOpenSettings = () => {
   font-weight: 500;
 }
 
+.menu-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  background: linear-gradient(135deg, #ff6b6b, #ff8e53);
+  color: white;
+  border-radius: 10px;
+  text-transform: uppercase;
+}
+
 /* Animations */
 .fade-enter-active,
 .fade-leave-active {

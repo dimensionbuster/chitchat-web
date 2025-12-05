@@ -1,18 +1,21 @@
 /**
- * 스타일 설정 관리 Composable
- * - IndexedDB에 스타일 설정 저장/로드
- * - 컨테이너 투명도, 배경 오버레이 투명도 등
- * - BroadcastChannel을 통한 창 간 실시간 동기화
+ * Style Settings Management Composable
+ * - Store/load style settings in IndexedDB
+ * - Container opacity, background overlay opacity, etc.
+ * - Real-time sync between windows via BroadcastChannel
  */
 import { ref, onMounted, onUnmounted } from 'vue'
 import { COLOR_TEMPLATES, DEFAULT_COLORS } from './colorTemplates'
 import type { ColorTemplate } from './colorTemplates'
+import { createLogger } from '@/util/logger'
+
+const log = createLogger('StyleSettings')
 
 // Re-export for convenience
 export { COLOR_TEMPLATES, DEFAULT_COLORS }
 export type { ColorTemplate }
 
-// 디바운스 유틸리티
+// Debounce utility
 function debounce<T extends (...args: never[]) => void>(fn: T, delay: number): (...args: Parameters<T>) => void {
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   return (...args: Parameters<T>) => {
@@ -196,13 +199,13 @@ function broadcastBackgroundChange(bgType: string) {
   }
 }
 
-// IndexedDB 초기화
+// IndexedDB init
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
 
     request.onerror = () => {
-      console.error('[StyleSettings] Failed to open IndexedDB:', request.error)
+      log.error('Failed to open IndexedDB:', request.error)
       reject(request.error)
     }
 
@@ -214,7 +217,7 @@ function openDatabase(): Promise<IDBDatabase> {
       const db = (event.target as IDBOpenDBRequest).result
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'key' })
-        console.log('[StyleSettings] Created IndexedDB store')
+        log.debug('Created IndexedDB store')
       }
     }
   })
@@ -234,12 +237,12 @@ async function saveSettingsToIDB(newSettings: StyleSettings): Promise<void> {
       const request = store.put({ key: SETTINGS_KEY, value: plainSettings })
 
       request.onsuccess = () => {
-        console.log('[StyleSettings] Settings saved to IndexedDB')
+        log.debug('Settings saved to IndexedDB')
         resolve()
       }
 
       request.onerror = () => {
-        console.error('[StyleSettings] Failed to save settings:', request.error)
+        log.error('Failed to save settings:', request.error)
         reject(request.error)
       }
 
@@ -248,7 +251,7 @@ async function saveSettingsToIDB(newSettings: StyleSettings): Promise<void> {
       }
     })
   } catch (error) {
-    console.error('[StyleSettings] Error saving settings:', error)
+    log.error('Error saving settings:', error)
   }
 }
 
@@ -270,16 +273,16 @@ async function loadSettingsFromDB(): Promise<StyleSettings> {
       request.onsuccess = () => {
         const result = request.result
         if (result?.value) {
-          console.log('[StyleSettings] Loaded settings from IndexedDB')
+          log.debug('Loaded settings from IndexedDB')
           resolve(mergeWithDefaults(result.value))
         } else {
-          console.log('[StyleSettings] No saved settings, using defaults')
+          log.debug('No saved settings, using defaults')
           resolve(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)))
         }
       }
 
       request.onerror = () => {
-        console.error('[StyleSettings] Failed to load settings:', request.error)
+        log.error('Failed to load settings:', request.error)
         reject(request.error)
       }
 
@@ -288,7 +291,7 @@ async function loadSettingsFromDB(): Promise<StyleSettings> {
       }
     })
   } catch (error) {
-    console.error('[StyleSettings] Error loading settings:', error)
+    log.error('Error loading settings:', error)
     return JSON.parse(JSON.stringify(DEFAULT_SETTINGS))
   }
 }
@@ -331,15 +334,15 @@ function mergeWithDefaults(saved: Partial<StyleSettings>): StyleSettings {
  * 스타일 설정 Composable
  */
 export function useStyleSettings() {
-  // BroadcastChannel 메시지 핸들러
+  // BroadcastChannel message handler
   function handleBroadcastMessage(event: MessageEvent) {
     if (event.data.type === 'settings-updated') {
-      console.log('[StyleSettings] Received settings update from another window')
+      log.debug('Received settings update from another window')
       settings.value = event.data.settings
       applyCSSVariables(event.data.settings)
     } else if (event.data.type === 'background-updated') {
-      console.log('[StyleSettings] Received background update:', event.data.backgroundType)
-      // 배경 이미지 변경 이벤트 발생 - 각 페이지에서 처리
+      log.debug('Received background update:', event.data.backgroundType)
+      // Background image change event - handled by each page
       window.dispatchEvent(new CustomEvent('background-changed', {
         detail: { type: event.data.backgroundType }
       }))
@@ -505,7 +508,7 @@ export function useStyleSettings() {
       }
       return false
     } catch (e) {
-      console.error('[StyleSettings] Failed to import settings:', e)
+      log.error('Failed to import settings:', e)
       return false
     }
   }

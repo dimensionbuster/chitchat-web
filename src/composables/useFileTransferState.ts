@@ -1,33 +1,37 @@
 /**
  * useFileTransferState
  *
- * 파일 전송 상태 관리 (부분 다운로드/청크 관리)
- * - 파일 전송 중단 시 상태 저장
- * - 이어받기 지원
- * - 청크 단위 진행 상황 추적
- * - IndexedDB를 통한 영구 저장
+ * File transfer state management (partial download/chunk management)
+ * - Save state when transfer is interrupted
+ * - Resume support
+ * - Chunk-level progress tracking
+ * - Persistent storage via IndexedDB
  */
 
 import type { PartialDownloadState } from '@/types/types'
+import { openFreshDB } from '@/util/indexedDB'
+import { createLogger } from '@/util/logger'
+
+const log = createLogger('FileTransferState')
 
 const DB_NAME = 'chitchat-partial-downloads'
-const DB_VERSION = 2 // 버전 업그레이드 (새로운 스키마)
+const DB_VERSION = 2
 const STORE_NAME = 'downloads'
-const CHUNKS_STORE_NAME = 'chunks' // 청크 전용 스토어
+const CHUNKS_STORE_NAME = 'chunks'
 
-// IndexedDB에 저장되는 메타데이터 구조 (청크 제외)
+// Metadata structure stored in IndexedDB (without chunk data)
 interface StoredDownloadState {
   fileId: string
   fileName: string
   totalChunks: number
   chunkSize: number
   totalBytes: number
-  receivedChunks: number[] // 받은 청크 인덱스만 (데이터는 별도 저장)
+  receivedChunks: number[]
   timestamp: number
   transferKey: string
 }
 
-// 청크 저장 구조 (별도 스토어)
+// Chunk storage structure (separate store)
 interface StoredChunk {
   key: string // "fileId-chunkIndex"
   fileId: string
@@ -36,36 +40,26 @@ interface StoredChunk {
 }
 
 /**
- * IndexedDB 초기화 (매번 새 연결 생성 - closing 에러 방지)
+ * Initialize IndexedDB (fresh connection each time - prevents closing errors)
  */
 async function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
+  return openFreshDB(DB_NAME, DB_VERSION, (db, oldVersion) => {
+    // Metadata store
+    if (!db.objectStoreNames.contains(STORE_NAME)) {
+      db.createObjectStore(STORE_NAME, { keyPath: 'fileId' })
+    }
 
-    request.onerror = () => reject(request.error)
-    request.onsuccess = () => resolve(request.result)
-
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result
-      const oldVersion = event.oldVersion
-
-      // 메타데이터 스토어
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'fileId' })
-      }
-
-      // 청크 스토어 (버전 2부터)
-      if (oldVersion < 2 && !db.objectStoreNames.contains(CHUNKS_STORE_NAME)) {
-        const chunksStore = db.createObjectStore(CHUNKS_STORE_NAME, { keyPath: 'key' })
-        chunksStore.createIndex('fileId', 'fileId', { unique: false })
-      }
+    // Chunks store (from version 2)
+    if (oldVersion < 2 && !db.objectStoreNames.contains(CHUNKS_STORE_NAME)) {
+      const chunksStore = db.createObjectStore(CHUNKS_STORE_NAME, { keyPath: 'key' })
+      chunksStore.createIndex('fileId', 'fileId', { unique: false })
     }
   })
 }
 
 /**
- * 부분 다운로드 상태를 관리하는 composable
- * 연결이 끊겨도 진행 상태를 유지하고 이어받기 가능
+ * Composable for managing partial download state
+ * Maintains progress state even when connection is lost for resume support
  */
 export function useFileTransferState() {
   /**
@@ -96,7 +90,7 @@ export function useFileTransferState() {
         tx.onerror = () => reject(tx.error)
       })
     } catch (error) {
-      console.error('[FileTransferState] 상태 저장 실패:', error)
+      log.error('State save failed:', error)
       throw error
     }
   }
@@ -124,7 +118,7 @@ export function useFileTransferState() {
         tx.onerror = () => reject(tx.error)
       })
     } catch (error) {
-      console.error(`[FileTransferState] 청크 저장 실패 (${chunkIndex}):`, error)
+      log.error(`Chunk save failed (${chunkIndex}):`, error)
       throw error
     }
   }
@@ -155,7 +149,7 @@ export function useFileTransferState() {
         tx.onerror = () => reject(tx.error)
       })
     } catch (error) {
-      console.error(`[FileTransferState] 배치 저장 실패:`, error)
+      log.error('Batch save failed:', error)
       throw error
     }
   }
@@ -212,7 +206,7 @@ export function useFileTransferState() {
 
       return state
     } catch (error) {
-      console.error('[FileTransferState] 상태 불러오기 실패:', error)
+      log.error('State load failed:', error)
       return null
     }
   }
@@ -312,7 +306,7 @@ export function useFileTransferState() {
 
     // DB에 청크 즉시 저장 (논블로킹)
     saveChunksBatch(state.fileId, new Map([[chunkIndex, chunkData]])).catch(err => {
-      console.warn(`[FileTransferState] 청크 ${chunkIndex} 저장 실패:`, err)
+      log.warn(`Chunk ${chunkIndex} save failed:`, err)
     })
   }
 
@@ -369,7 +363,7 @@ export function useFileTransferState() {
   }
 
   // 앱 시작 시 오래된 상태 정리
-  cleanupOldStates().catch(console.error)
+  cleanupOldStates().catch(err => log.error('Cleanup failed:', err))
 
   return {
     saveDownloadState,

@@ -1,69 +1,73 @@
 /**
  * useStorageFileCache
  *
- * IndexedDB를 사용하여 파일을 로컬에 캐시하는 스토리지 관리
- * - 파일 캐시 저장/조회
- * - Blob 형태로 저장
+ * IndexedDB-based file cache storage management
+ * - File cache save/retrieve
+ * - Stored as Blob
  */
 
-const DB_NAME = 'chitchat-file-cache'
-const STORE_NAME = 'files'
-const DB_VERSION = 1
+import { createIndexedDBStore } from '@/util/indexedDB'
+import { createLogger } from '@/util/logger'
 
-let dbPromise: Promise<IDBDatabase> | null = null
+const log = createLogger('StorageFileCache')
 
-function getDB() {
-  if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION)
+const fileStore = createIndexedDBStore<Blob>({
+  dbName: 'chitchat-file-cache',
+  storeName: 'files',
+})
 
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => resolve(request.result)
-
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME)
-        }
-      }
-    })
-  }
-  return dbPromise
-}
-
-export async function cacheFile(cid: string, blob: Blob) {
+/**
+ * Cache a file
+ */
+export async function cacheFile(cid: string, blob: Blob): Promise<void> {
   try {
-    const db = await getDB()
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    store.put(blob, cid)
-    await new Promise((resolve, reject) => {
-      tx.oncomplete = resolve
-      tx.onerror = () => reject(tx.error)
-    })
+    await fileStore.set(cid, blob)
+    log.debug(`Cache saved: ${cid}`)
   } catch (error) {
-    console.error('[StorageFileCache] 캐시 저장 실패:', error)
+    log.error('Cache save failed:', error)
   }
 }
 
+/**
+ * Get cached file
+ */
 export async function getCachedFile(cid: string): Promise<Blob | null> {
   try {
-    const db = await getDB()
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    const request = store.get(cid)
-
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result || null)
-      request.onerror = () => reject(request.error)
-    })
+    return await fileStore.get(cid)
   } catch (error) {
-    console.error('[StorageFileCache] 캐시 로드 실패:', error)
+    log.error('Cache load failed:', error)
     return null
   }
 }
 
-export async function hasCachedFile(cid: string) {
+/**
+ * Check if file is cached
+ */
+export async function hasCachedFile(cid: string): Promise<boolean> {
   const blob = await getCachedFile(cid)
   return blob !== null
+}
+
+/**
+ * Delete cached file
+ */
+export async function deleteCachedFile(cid: string): Promise<void> {
+  try {
+    await fileStore.delete(cid)
+    log.debug(`Cache deleted: ${cid}`)
+  } catch (error) {
+    log.error('Cache delete failed:', error)
+  }
+}
+
+/**
+ * Clear all cache
+ */
+export async function clearCache(): Promise<void> {
+  try {
+    await fileStore.clear()
+    log.info('All cache cleared')
+  } catch (error) {
+    log.error('Cache clear failed:', error)
+  }
 }
