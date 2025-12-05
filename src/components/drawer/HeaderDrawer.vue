@@ -23,6 +23,7 @@ const emit = defineEmits<{
   resync: []
   goHome: []
   closeChatRoom: []
+  openWatchParty: []
 }>()
 
 const isOpen = ref(false)
@@ -63,6 +64,12 @@ const handleGoHome = () => {
 
 const handleCloseChatRoom = () => {
   emit('closeChatRoom')
+  closeDrawer()
+}
+
+// Watch Party 열기 (Electron 전용)
+const handleOpenWatchParty = () => {
+  emit('openWatchParty')
   closeDrawer()
 }
 
@@ -124,6 +131,15 @@ const handleOpenSettings = () => {
                 :disabled="disabled"
                 @resync="handleResync"
               />
+            </div>
+
+            <!-- Watch Party 섹션 (Electron 전용) -->
+            <div v-if="isElectron" class="menu-section">
+              <div class="section-title">Watch Party</div>
+              <button class="menu-item" @click="handleOpenWatchParty">
+                <span class="menu-icon">📺</span>
+                <span class="menu-label">Watch Party 열기</span>
+              </button>
             </div>
 
             <!-- 설정 섹션 (Electron 전용) -->

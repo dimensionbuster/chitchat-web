@@ -46,7 +46,7 @@ const isUploading = ref(false)
 const isInitialLoad = ref(true)
 
 // Yjs & File Systems
-const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot } = await useYjs(activeRoomId, me, myName.value)
+const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot, doc } = await useYjs(activeRoomId, me, myName.value)
 
 // 글로벌 큐 매니저 초기화
 const { setProvider } = useGlobalDataChannelQueue({
@@ -106,6 +106,13 @@ const viewingProfileUserId = ref<string | null>(null)
 const viewingProfileImageUrl = ref<string | null>(null)
 const downloadingProfileFileId = ref<string | null>(null)
 const isDraggingOver = ref(false)
+
+// Watch Party - Electron에서 별도 창으로 열기
+const handleOpenWatchParty = () => {
+  if (window.electronApi?.openWatchParty) {
+    window.electronApi.openWatchParty(activeRoomId)
+  }
+}
 
 // 드래그 앤 드롭 핸들러
 const handleDragOver = (e: DragEvent) => {
@@ -530,6 +537,7 @@ const handleImportSnapshot = async () => {
       @clearChat="handleClearChat"
       @resetAll="handleResetAll"
       @closeChatRoom="handleCloseChatRoom"
+      @openWatchParty="handleOpenWatchParty"
     />
 
     <MessageList

@@ -21,6 +21,7 @@ const emit = defineEmits<{
   clearChat: []
   resetAll: []
   closeChatRoom: []
+  openWatchParty: []
 }>()
 
 const showUserList = ref(false)
@@ -77,6 +78,7 @@ const toggleUserList = () => {
       @resync="emit('forceResync')"
       @goHome="emit('goHome')"
       @closeChatRoom="emit('closeChatRoom')"
+      @openWatchParty="emit('openWatchParty')"
     />
   </div>
 </template>

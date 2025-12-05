@@ -5,6 +5,7 @@ import ChatRoom from '../pages/ChatRoom.vue'
 import Notification from '../pages/Notification.vue'
 import Dialog from '../pages/Dialog.vue'
 import Settings from '../pages/Settings.vue'
+import WatchParty from '../pages/WatchParty.vue'
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -48,6 +49,14 @@ const router = createRouter({
       path: '/settings',
       name: 'Settings',
       component: Settings,
+    },
+    {
+      path: '/watch-party',
+      name: 'WatchParty',
+      component: WatchParty,
+      props: (route) => ({
+        roomId: (route.query.roomId as string) || 'default-room',
+      }),
     },
   ],
 })
