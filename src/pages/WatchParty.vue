@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useWatchParty, extractYouTubeVideoId, type WatchPartyState } from '@/composables/useWatchParty'
 import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
@@ -30,8 +30,7 @@ const currentUserName = `User ${currentUserId.slice(-4)}`
 const isReady = ref(false)
 const urlInput = ref('')
 const playerReady = ref(false)
-const player = ref<YT.Player | null>(null)
-const ignoreEvent = ref(false)
+const iframeRef = ref<HTMLIFrameElement | null>(null)
 
 // BroadcastChannel for cross-window communication
 const broadcastChannel = new BroadcastChannel(`watch-party-${props.roomId}`)
@@ -53,120 +52,43 @@ const state = ref<WatchPartyState>({
 
 const isHost = computed(() => state.value.hostId === currentUserId)
 
-// YouTube IFrame API 로드
-const loadYouTubeAPI = (): Promise<void> => {
-  return new Promise((resolve) => {
-    if (window.YT && window.YT.Player) {
-      resolve()
-      return
-    }
-
-    const tag = document.createElement('script')
-    tag.src = 'https://www.youtube.com/iframe_api'
-    const firstScriptTag = document.getElementsByTagName('script')[0]
-    if (firstScriptTag && firstScriptTag.parentNode) {
-      firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
-    } else {
-      document.head.appendChild(tag)
-    }
-
-    window.onYouTubeIframeAPIReady = () => resolve()
+// iframe URL 생성
+const iframeUrl = computed(() => {
+  if (!state.value.videoId) return ''
+  const params = new URLSearchParams({
+    autoplay: '0',
+    controls: '1',
+    rel: '0',
+    modestbranding: '1',
+    iv_load_policy: '3',
+    fs: '1',
+    enablejsapi: '0'  // API 비활성화 - 순수 iframe만 사용
   })
+  return `https://www.youtube-nocookie.com/embed/${state.value.videoId}?${params.toString()}`
+})
+
+// 플레이어 생성 (직접 iframe)
+const createPlayer = (videoId: string) => {
+  state.value.videoId = videoId
+  playerReady.value = true
+  console.log('[WatchParty] Player ready (iframe mode)')
 }
 
-// 플레이어 생성
-const createPlayer = async (videoId: string) => {
-  await loadYouTubeAPI()
-
-  if (player.value) {
-    player.value.destroy()
-  }
-
-  player.value = new window.YT.Player('youtube-player', {
-    height: '100%',
-    width: '100%',
-    videoId,
-    host: 'https://www.youtube-nocookie.com',
-    playerVars: {
-      autoplay: 0,
-      controls: 1,
-      rel: 0,
-      modestbranding: 1,
-      iv_load_policy: 3,
-      fs: 1
-    },
-    events: {
-      onReady: () => {
-        playerReady.value = true
-        console.log('[WatchParty] Player ready')
-      },
-      onStateChange: (event: YT.OnStateChangeEvent) => {
-        if (!isHost.value || ignoreEvent.value) return
-        handlePlayerStateChange(event.data)
-      }
-    }
-  })
-}
-
-// 호스트 - 플레이어 상태 변화 처리
-const handlePlayerStateChange = (playerState: number) => {
-  if (!player.value || !watchParty) return
-
-  const currentTime = player.value.getCurrentTime()
-
-  switch (playerState) {
-    case window.YT.PlayerState.PLAYING:
-      watchParty.broadcastEvent('play', currentTime)
-      // BroadcastChannel로도 전송 (같은 PC의 채팅방 창에)
-      broadcastChannel.postMessage({ type: 'play', currentTime })
-      break
-    case window.YT.PlayerState.PAUSED:
-      watchParty.broadcastEvent('pause', currentTime)
-      broadcastChannel.postMessage({ type: 'pause', currentTime })
-      break
-  }
-}
+// 호스트 - 플레이어 상태 변화 처리 (iframe에선 제한적)
+// 참고: 순수 iframe 모드에서는 재생 상태 감지가 불가능
+// 동기화가 필요하면 수동 버튼을 통해 처리
 
 // 참가자 - 원격 이벤트 처리
 const handleRemoteEvent = (remoteState: WatchPartyState) => {
   state.value = { ...remoteState }
 
-  if (!player.value || !playerReady.value) return
-
-  ignoreEvent.value = true
-
-  try {
-    switch (remoteState.eventType) {
-      case 'play':
-        if (watchParty?.needsTimeSync(player.value.getCurrentTime())) {
-          player.value.seekTo(remoteState.currentTime, true)
-        }
-        player.value.playVideo()
-        break
-      case 'pause':
-        player.value.pauseVideo()
-        if (watchParty?.needsTimeSync(player.value.getCurrentTime())) {
-          player.value.seekTo(remoteState.currentTime, true)
-        }
-        break
-      case 'seek':
-        player.value.seekTo(remoteState.currentTime, true)
-        break
-      case 'start':
-        if (remoteState.videoId) {
-          createPlayer(remoteState.videoId)
-        }
-        break
-      case 'end':
-        // Watch Party 종료
-        window.close()
-        break
-    }
-  } catch (e) {
-    console.error('[WatchParty] Remote event error:', e)
+  // iframe 모드에서는 postMessage로 제어 (제한적)
+  // start/end 이벤트만 처리
+  if (remoteState.eventType === 'start' && remoteState.videoId) {
+    createPlayer(remoteState.videoId)
+  } else if (remoteState.eventType === 'end') {
+    window.close()
   }
-
-  setTimeout(() => { ignoreEvent.value = false }, 500)
 }
 
 // Watch Party 시작
@@ -249,9 +171,6 @@ onUnmounted(() => {
   if (persistence) {
     persistence.destroy()
   }
-  if (player.value) {
-    player.value.destroy()
-  }
 })
 </script>
 
@@ -296,7 +215,14 @@ onUnmounted(() => {
       <!-- Watch Party 진행 중 - 플레이어 -->
       <div v-else class="player-panel">
         <div class="player-container">
-          <div id="youtube-player"></div>
+          <iframe
+            v-if="state.videoId"
+            ref="iframeRef"
+            :src="iframeUrl"
+            frameborder="0"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowfullscreen
+          ></iframe>
           <div v-if="!playerReady" class="player-loading">
             <div class="spinner"></div>
             <p>플레이어 로딩 중...</p>
@@ -307,6 +233,7 @@ onUnmounted(() => {
         <div class="status-bar">
           <div class="status-left">
             <span v-if="isHost" class="host-badge">호스트</span>
+            <span class="info-text">동일한 영상을 함께 시청 중</span>
           </div>
           <div class="status-right">
             <button v-if="isHost" @click="handleEndWatchParty" class="end-btn">
@@ -476,6 +403,15 @@ onUnmounted(() => {
   background: #000;
 }
 
+.player-container iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
 .player-container :deep(iframe) {
   position: absolute;
   top: 0;
@@ -537,6 +473,11 @@ onUnmounted(() => {
   background: var(--gradient-warning, linear-gradient(135deg, #f1c40f 0%, #f39c12 100%));
   color: var(--text-on-warning, #333);
   font-weight: var(--font-weight-semibold, 600);
+}
+
+.info-text {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--text-secondary);
 }
 
 .end-btn {

@@ -193,12 +193,29 @@ const createYouTubePlayer = async (videoId: string, containerId: string) => {
     events: {
       onReady: (event) => {
         console.log('YouTube player ready:', videoId)
+        // iframe에 allow 속성 추가 (Permissions Policy)
+        const iframe = document.querySelector(`#${containerId}`) as HTMLIFrameElement
+        if (iframe) {
+          iframe.setAttribute('allow',
+            'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
+          )
+        }
       },
       onError: (event) => {
         console.error('YouTube player error:', event.data)
       }
     }
   })
+
+  // 플레이어 생성 직후에도 allow 속성 시도
+  setTimeout(() => {
+    const iframe = document.querySelector(`#${containerId}`) as HTMLIFrameElement
+    if (iframe && !iframe.hasAttribute('allow')) {
+      iframe.setAttribute('allow',
+        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
+      )
+    }
+  }, 100)
 
   youtubePlayersRef.value.set(containerId, player)
 }
