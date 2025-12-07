@@ -305,9 +305,6 @@ onMounted(async () => {
       <!-- Header -->
       <div class="settings-header">
         <h1>설정</h1>
-        <button class="close-btn" @click="closeSettings">
-          <span>✕</span>
-        </button>
       </div>
 
       <!-- Content -->

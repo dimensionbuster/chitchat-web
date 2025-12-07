@@ -141,7 +141,8 @@ export function useFileTransferProgress() {
     const transfer = transfers[fileId]
     if (!transfer) return 0
     if (transfer.totalBytes === 0) return 0
-    return (transfer.receivedBytes / transfer.totalBytes) * 100
+    // 100%를 초과하지 않도록 상한 적용 (마지막 청크 크기 오차 방지)
+    return Math.min((transfer.receivedBytes / transfer.totalBytes) * 100, 100)
   }
 
   /**

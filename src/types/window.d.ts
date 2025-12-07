@@ -26,7 +26,8 @@ export interface ElectronApi {
   // 설정 창 API
   openSettings: () => void
   // Watch Party API
-  openWatchParty: (roomId: string) => void
+  openWatchParty: (roomId: string, youtubeUrl?: string) => void
+  sendWatchPartyCommand: (command: string, data: string) => void
   // 알림 소리 API
   setNotificationSound: (audioData: ArrayBuffer) => Promise<boolean>
   getNotificationSound: () => Promise<string | null>

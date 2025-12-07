@@ -1,57 +1,10 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatMessage' })
-import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
+import { computed } from 'vue'
 import type { ChatMessage, FileMeta } from '@/types/types'
 import ImageMessage from '@/components/image/ImageMessage.vue'
 import FileMessage from '@/components/file/FileMessage.vue'
 import ProfileAvatar from '@/components/profile/ProfileAvatar.vue'
-
-// YouTube API 로드 상태
-let ytApiLoaded = false
-let ytApiLoading = false
-const ytApiReadyCallbacks: (() => void)[] = []
-
-// YouTube IFrame API 로드
-const loadYouTubeApi = (): Promise<void> => {
-  return new Promise((resolve) => {
-    if (ytApiLoaded && window.YT && window.YT.Player) {
-      resolve()
-      return
-    }
-
-    ytApiReadyCallbacks.push(resolve)
-
-    if (ytApiLoading) {
-      return
-    }
-
-    ytApiLoading = true
-
-    // 기존 콜백 저장
-    const existingCallback = window.onYouTubeIframeAPIReady
-
-    window.onYouTubeIframeAPIReady = () => {
-      ytApiLoaded = true
-      ytApiLoading = false
-      if (existingCallback) existingCallback()
-      ytApiReadyCallbacks.forEach(cb => cb())
-      ytApiReadyCallbacks.length = 0
-    }
-
-    // 이미 로드된 스크립트가 있는지 확인
-    if (!document.getElementById('youtube-iframe-api')) {
-      const tag = document.createElement('script')
-      tag.id = 'youtube-iframe-api'
-      tag.src = 'https://www.youtube.com/iframe_api'
-      const firstScriptTag = document.getElementsByTagName('script')[0]
-      if (firstScriptTag && firstScriptTag.parentNode) {
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
-      } else {
-        document.head.appendChild(tag)
-      }
-    }
-  })
-}
 
 const props = defineProps<{
   prevMessage?: ChatMessage
@@ -79,23 +32,8 @@ const isImage = computed(() => {
 // URL 정규식 (http, https, ftp 등)
 const urlRegex = /(https?:\/\/[^\s]+)|(ftp:\/\/[^\s]+)/g
 
-// YouTube URL에서 비디오 ID 추출
+// YouTube URL 정규식
 const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})(?:[^\s]*)?/g
-
-// YouTube 비디오 ID만 추출하는 함수
-const extractYoutubeVideoId = (url: string): string | null => {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/,
-    /(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-    /(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
-    /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
-  ]
-  for (const pattern of patterns) {
-    const match = url.match(pattern)
-    if (match && match[1]) return match[1]
-  }
-  return null
-}
 
 // URL이 YouTube 링크인지 확인
 const isYoutubeUrl = (url: string): boolean => {
@@ -105,154 +43,12 @@ const isYoutubeUrl = (url: string): boolean => {
 // 메시지에서 YouTube URL들을 추출
 const extractYoutubeUrls = computed(() => {
   if (!props.message.text) return []
-  const urls: { videoId: string; originalUrl: string }[] = []
+  const urls: string[] = []
   const matches = props.message.text.match(youtubeRegex)
   if (matches) {
-    for (const match of matches) {
-      const videoId = extractYoutubeVideoId(match)
-      if (videoId) {
-        urls.push({ videoId, originalUrl: match })
-      }
-    }
+    urls.push(...matches)
   }
   return urls
-})
-
-// YouTube 임베드 URL 생성 (광고 최소화 파라미터 적용)
-const getYoutubeEmbedUrl = (videoId: string): string => {
-  const origin = window.location.origin
-  const params = new URLSearchParams({
-    autoplay: '0',
-    mute: '0',
-    playsinline: '1',
-    rel: '0',
-    modestbranding: '1',
-    controls: '1',
-    fs: '1',
-    disablekb: '0',
-    iv_load_policy: '3',
-    cc_load_policy: '0',
-    origin: origin,
-    enablejsapi: '1',
-    widgetid: '1',
-    showinfo: '0',
-    forigin: origin + '/',
-    aoriginsup: '1',
-    vf: '6'
-  })
-  // youtube-nocookie.com 사용으로 관련 동영상 및 쿠키 최소화
-  return `https://www.youtube-nocookie.com/embed/${videoId}?${params.toString()}`
-}
-
-// YouTube 플레이어 인스턴스 저장
-const youtubePlayersRef = ref<Map<string, YT.Player>>(new Map())
-const youtubeContainersReady = ref<Set<string>>(new Set())
-
-// YouTube 플레이어 생성
-const createYouTubePlayer = async (videoId: string, containerId: string) => {
-  await loadYouTubeApi()
-
-  // 이미 플레이어가 있으면 제거
-  const existingPlayer = youtubePlayersRef.value.get(containerId)
-  if (existingPlayer) {
-    try {
-      existingPlayer.destroy()
-    } catch {
-      // ignore
-    }
-    youtubePlayersRef.value.delete(containerId)
-  }
-
-  const container = document.getElementById(containerId)
-  if (!container) return
-
-  const origin = window.location.origin
-
-  const player = new window.YT.Player(containerId, {
-    host: 'https://www.youtube-nocookie.com',  // 쿠키 없는 도메인 사용
-    videoId: videoId,
-    playerVars: {
-      autoplay: 0,
-      mute: 0,
-      playsinline: 1,
-      rel: 0,              // 관련 동영상 비활성화 (같은 채널만)
-      modestbranding: 1,   // YouTube 로고 최소화
-      controls: 1,
-      fs: 1,
-      disablekb: 0,
-      iv_load_policy: 3,   // 주석 비활성화
-      cc_load_policy: 0,
-      origin: origin,
-      enablejsapi: 1,
-      showinfo: 0,         // 영상 정보 숨김 (deprecated지만 일부 효과)
-      // SkipCut 스타일 파라미터
-      forigin: origin + '/',
-      aoriginsup: 1,
-      vf: 6
-    },
-    events: {
-      onReady: (event) => {
-        console.log('YouTube player ready:', videoId)
-        // iframe에 allow 속성 추가 (Permissions Policy)
-        const iframe = document.querySelector(`#${containerId}`) as HTMLIFrameElement
-        if (iframe) {
-          iframe.setAttribute('allow',
-            'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
-          )
-        }
-      },
-      onError: (event) => {
-        console.error('YouTube player error:', event.data)
-      }
-    }
-  })
-
-  // 플레이어 생성 직후에도 allow 속성 시도
-  setTimeout(() => {
-    const iframe = document.querySelector(`#${containerId}`) as HTMLIFrameElement
-    if (iframe && !iframe.hasAttribute('allow')) {
-      iframe.setAttribute('allow',
-        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
-      )
-    }
-  }, 100)
-
-  youtubePlayersRef.value.set(containerId, player)
-}
-
-// 컴포넌트 마운트 시 플레이어 초기화
-const initializePlayers = async () => {
-  await nextTick()
-  for (const youtube of extractYoutubeUrls.value) {
-    const containerId = `youtube-player-${props.message.id}-${youtube.videoId}`
-    youtubeContainersReady.value.add(containerId)
-    await createYouTubePlayer(youtube.videoId, containerId)
-  }
-}
-
-// YouTube URL이 변경되면 플레이어 재생성
-watch(() => extractYoutubeUrls.value, async (newUrls) => {
-  if (newUrls.length > 0) {
-    await initializePlayers()
-  }
-}, { deep: true })
-
-onMounted(async () => {
-  if (extractYoutubeUrls.value.length > 0) {
-    await initializePlayers()
-  }
-})
-
-onUnmounted(() => {
-  // 플레이어 정리
-  youtubePlayersRef.value.forEach((player) => {
-    try {
-      player.destroy()
-    } catch {
-      // ignore
-    }
-  })
-  youtubePlayersRef.value.clear()
 })
 
 // 텍스트에서 URL을 찾아서 HTML로 변환
@@ -277,6 +73,28 @@ const handleLinkClick = (event: MouseEvent) => {
     }
   }
 }
+
+// Watch Party 버튼 클릭 핸들러
+const handleWatchParty = (youtubeUrl: string) => {
+  console.log('[ChatMessage] Opening Watch Party with URL:', youtubeUrl)
+  console.log('[ChatMessage] Current location hash:', window.location.hash)
+
+  // roomId는 채팅방 URL에서 가져오기 - 여러 패턴 시도
+  let roomId = 'default'
+
+  // 패턴 1: #/chat/roomId 또는 #/chat?roomId=xxx
+  const hashMatch = window.location.hash.match(/\/chat[\/\?](?:roomId=)?([^&\/\?]+)/)
+  if (hashMatch && hashMatch[1]) {
+    roomId = decodeURIComponent(hashMatch[1])
+  }
+
+  console.log('[ChatMessage] Extracted roomId:', roomId)
+
+  if (window.electronApi?.openWatchParty) {
+    window.electronApi.openWatchParty(roomId, youtubeUrl)
+  }
+}
+
 const showOnlyMessage = computed(() => {
   const prev = props.prevMessage
   const curr = props.message
@@ -316,13 +134,17 @@ const showOnlyMessage = computed(() => {
         @click="handleLinkClick"
       ></span>
 
-      <!-- YouTube 임베드 (IFrame Player API 사용) -->
-      <div v-if="extractYoutubeUrls.length > 0" class="youtube-embeds">
-        <div v-for="youtube in extractYoutubeUrls" :key="youtube.videoId" class="youtube-embed-wrapper">
-          <div class="youtube-embed">
-            <div :id="`youtube-player-${message.id}-${youtube.videoId}`" class="youtube-player-container"></div>
-          </div>
-        </div>
+      <!-- YouTube Watch Party 버튼 -->
+      <div v-if="extractYoutubeUrls.length > 0" class="youtube-buttons">
+        <button
+          v-for="(youtubeUrl, index) in extractYoutubeUrls"
+          :key="index"
+          class="watch-party-btn"
+          @click="handleWatchParty(youtubeUrl)"
+        >
+          <span class="icon">📺</span>
+          <span class="text">Watch Party로 보기</span>
+        </button>
       </div>
 
       <!-- 이미지 메시지 -->
@@ -418,35 +240,44 @@ const showOnlyMessage = computed(() => {
   border-bottom-color: var(--color-secondary);
 }
 
-.youtube-embeds {
+.youtube-buttons {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-sm);
-  margin-top: var(--spacing-sm);
+  gap: 8px;
+  margin-top: 8px;
 }
 
-.youtube-embed {
-  position: relative;
-  width: 100%;
-  max-width: 560px;
-  aspect-ratio: 16 / 9;
-  border-radius: var(--border-radius-md, 8px);
-  overflow: hidden;
-  background-color: var(--bg-secondary, #1a1a1a);
-}
-
-.youtube-player-container {
-  width: 100%;
-  height: 100%;
-}
-
-.youtube-embed iframe,
-.youtube-embed :deep(iframe) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+.watch-party-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, var(--accent-primary, #667eea) 0%, var(--accent-secondary, #764ba2) 100%);
+  color: white;
   border: none;
+  border-radius: var(--radius-md, 8px);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  max-width: 250px;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+.watch-party-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.watch-party-btn:active {
+  transform: translateY(0);
+}
+
+.watch-party-btn .icon {
+  font-size: 18px;
+}
+
+.watch-party-btn .text {
+  flex: 1;
 }
 </style>

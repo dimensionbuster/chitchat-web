@@ -255,9 +255,11 @@ async function saveSettingsToIDB(newSettings: StyleSettings): Promise<void> {
   }
 }
 
-// 디바운스된 저장 함수 (300ms 지연)
+// 디바운스된 저장 함수 (300ms 지연) - IndexedDB 저장 + main process 동기화
 const debouncedSaveSettings = debounce((newSettings: StyleSettings) => {
   saveSettingsToIDB(newSettings)
+  // main process에도 동기화 (WatchParty 등 로컬 서버 창에서 사용)
+  syncSettingsToMain(newSettings)
 }, 300)
 
 // 설정 로드
@@ -330,6 +332,61 @@ function mergeWithDefaults(saved: Partial<StyleSettings>): StyleSettings {
   }
 }
 
+// 로컬 HTTP 서버에서 실행 중인지 확인 (http://localhost:xxxxx)
+function isRunningOnLocalServer(): boolean {
+  return window.location.protocol === 'http:' && window.location.hostname === 'localhost'
+}
+
+// main process에서 스타일 설정 로드 (IPC)
+async function loadSettingsFromMain(): Promise<StyleSettings | null> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const electronApi = (window as any).electronApi
+    if (electronApi?.getStyleSettings) {
+      const settings = await electronApi.getStyleSettings()
+      if (settings) {
+        log.debug('Loaded settings from main process (IPC)')
+        return mergeWithDefaults(settings as Partial<StyleSettings>)
+      }
+    }
+  } catch (error) {
+    log.error('Failed to load settings from main process:', error)
+  }
+  return null
+}
+
+// main process에 스타일 설정 저장 (IPC) - 비동기 동기화
+async function syncSettingsToMain(newSettings: StyleSettings): Promise<void> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const electronApi = (window as any).electronApi
+    if (electronApi?.setStyleSettings) {
+      await electronApi.setStyleSettings(JSON.parse(JSON.stringify(newSettings)))
+      log.debug('Synced settings to main process')
+    }
+  } catch (error) {
+    log.error('Failed to sync settings to main process:', error)
+  }
+}
+
+// main process에서 설정 변경 이벤트 리스너 등록
+function setupMainSettingsListener(): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const electronApi = (window as any).electronApi
+    if (electronApi?.onStyleSettingsChanged) {
+      electronApi.onStyleSettingsChanged((newSettings: unknown) => {
+        log.debug('Received settings change from main process')
+        const merged = mergeWithDefaults(newSettings as Partial<StyleSettings>)
+        settings.value = merged
+        applyCSSVariables(merged)
+      })
+    }
+  } catch (error) {
+    log.error('Failed to setup main settings listener:', error)
+  }
+}
+
 /**
  * 스타일 설정 Composable
  */
@@ -351,8 +408,13 @@ export function useStyleSettings() {
 
   // 초기화 - 설정 로드 및 BroadcastChannel 설정
   async function initialize(): Promise<void> {
-    // BroadcastChannel 설정
-    if (!broadcastChannel) {
+    // 로컬 서버에서 실행 중일 때는 main process에서 설정 변경 이벤트 리스너 등록
+    if (isRunningOnLocalServer()) {
+      setupMainSettingsListener()
+    }
+
+    // BroadcastChannel 설정 (file:// 프로토콜에서만 작동)
+    if (!isRunningOnLocalServer() && !broadcastChannel) {
       broadcastChannel = new BroadcastChannel(CHANNEL_NAME)
       broadcastChannel.onmessage = handleBroadcastMessage
     }
@@ -364,7 +426,22 @@ export function useStyleSettings() {
 
     isLoading.value = true
     try {
-      const loaded = await loadSettingsFromDB()
+      let loaded: StyleSettings
+
+      // 로컬 서버에서 실행 중일 때는 main process에서 설정 로드
+      if (isRunningOnLocalServer()) {
+        const mainSettings = await loadSettingsFromMain()
+        if (mainSettings) {
+          loaded = mainSettings
+        } else {
+          // fallback: IndexedDB에서 로드 시도 (동일 origin인 경우 - 개발 환경)
+          loaded = await loadSettingsFromDB()
+        }
+      } else {
+        // file:// 프로토콜: IndexedDB에서 로드
+        loaded = await loadSettingsFromDB()
+      }
+
       settings.value = loaded
       applyCSSVariables(loaded)
       isLoaded.value = true

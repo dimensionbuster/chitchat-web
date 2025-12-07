@@ -347,6 +347,8 @@ const handleResetAll = async () => {
 }
 // Message watching
 let previousTotalMessageCount = 0
+let notifiedMessageIds = new Set<string>() // 이미 알림을 보낸 메시지 ID 추적
+
 watch(messagesRef, async (newMessages) => {
   await nextTick()
 
@@ -361,12 +363,24 @@ watch(messagesRef, async (newMessages) => {
   if (!isInitialLoad.value && currentTotalCount > previousTotalMessageCount) {
     const newMessage = newMessages[newMessages.length - 1]
     if (newMessage && newMessage.authorTrueUuid !== me) {
-      const authorName = newMessage.authorName || 'Unknown'
-      const text = newMessage.text || '파일을 전송했습니다'
-      console.log('[알림] 새 메시지:', { authorName, text, totalCount: currentTotalCount })
-      showNotification(authorName, text, newMessage.id, activeRoomId)
-      // 알림 소리 재생
-      playSound()
+      // 이미 알림을 보낸 메시지인지 확인
+      if (notifiedMessageIds.has(newMessage.id)) {
+        console.log('[알림] 이미 알림을 보낸 메시지, 스킵:', newMessage.id)
+      } else {
+        const authorName = newMessage.authorName || 'Unknown'
+        const text = newMessage.text || '파일을 전송했습니다'
+        console.log('[알림] 새 메시지:', { authorName, text, totalCount: currentTotalCount })
+        showNotification(authorName, text, newMessage.id, activeRoomId)
+        // 알림 소리 재생
+        playSound()
+        // 알림을 보낸 메시지 ID 기록
+        notifiedMessageIds.add(newMessage.id)
+        // Set이 너무 커지지 않도록 오래된 항목 정리 (최근 100개만 유지)
+        if (notifiedMessageIds.size > 100) {
+          const idsArray = Array.from(notifiedMessageIds)
+          notifiedMessageIds = new Set(idsArray.slice(-50))
+        }
+      }
     }
   }
   previousTotalMessageCount = currentTotalCount

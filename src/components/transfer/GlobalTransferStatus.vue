@@ -24,13 +24,19 @@ const groupedTransfers = computed(() => {
     const first = transfers[0]
     if (!first) return null
 
+    // 각 전송의 진행률 계산 시 100%를 초과하지 않도록 제한
+    const avgProgress = transfers.reduce((sum, t) => {
+      const progress = t.totalBytes > 0 ? Math.min((t.receivedBytes / t.totalBytes) * 100, 100) : 0
+      return sum + progress
+    }, 0) / transfers.length
+
     return {
       fileName,
       transfers,
       count: transfers.length,
       type: first.type,
       totalBytes: first.totalBytes,
-      avgProgress: transfers.reduce((sum, t) => sum + (t.receivedBytes / t.totalBytes), 0) / transfers.length * 100,
+      avgProgress,
     }
   }).filter((g): g is NonNullable<typeof g> => g !== null)
 })
@@ -39,7 +45,8 @@ const hasActiveTransfers = computed(() => activeTransfers.value.length > 0)
 const hasQueue = computed(() => uploadQueueInfo.queuedCount > 0)
 
 const formatProgress = (transfer: { receivedBytes: number; totalBytes: number }) => {
-  const percent = (transfer.receivedBytes / transfer.totalBytes * 100).toFixed(0)
+  // 100%를 초과하지 않도록 제한 (마지막 청크 크기 오차 방지)
+  const percent = Math.min((transfer.receivedBytes / transfer.totalBytes * 100), 100).toFixed(0)
   return `${percent}%`
 }
 

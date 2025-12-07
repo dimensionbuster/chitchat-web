@@ -96,13 +96,30 @@ export function useFileTransfer(
   const findBestSender = (fileId: string): string | null => {
     const peers: Array<{ uuid: string; queueLength: number }> = []
 
-    for (const [, state] of provider.awareness.getStates()) {
+    console.log(`[FileTransfer-debug] findBestSender 시작 - myUuid: ${myUuid}, clientID: ${provider.awareness.clientID}`)
+
+    for (const [clientId, state] of provider.awareness.getStates()) {
       const stateObj = state as Record<string, unknown>
       const userUuid = stateObj.userUuid as string | undefined
       const ownedFiles = stateObj.ownedFiles as string[] | undefined
 
-      if (!userUuid || userUuid === myUuid || !ownedFiles) continue
-      if (!ownedFiles.includes(fileId)) continue
+      console.log(`[FileTransfer-debug] 피어 확인 - clientId: ${clientId}, userUuid: ${userUuid}, hasFile: ${ownedFiles?.includes(fileId)}`)
+
+      // 자기 자신 필터링 (clientId 또는 userUuid 기준)
+      // userUuid가 'user-' prefix를 포함할 수 있으므로 여러 방식으로 비교
+      const isSelf = !userUuid ||
+        userUuid === myUuid ||
+        userUuid === `user-${myUuid}` ||
+        userUuid.endsWith(myUuid) ||
+        myUuid.endsWith(userUuid.replace('user-', '')) ||
+        clientId === provider.awareness.clientID
+
+      if (isSelf) {
+        console.log(`[FileTransfer-debug] 자기 자신 건너뜀 - userUuid: ${userUuid}`)
+        continue
+      }
+
+      if (!ownedFiles || !ownedFiles.includes(fileId)) continue
 
       // 해당 파일을 가진 피어의 큐 길이 확인
       // (awareness에서 실시간으로 가져올 수 없으므로 기본값 0 사용)
@@ -112,10 +129,15 @@ export function useFileTransfer(
       })
     }
 
-    if (peers.length === 0) return null
+    if (peers.length === 0) {
+      console.log(`[FileTransfer] 파일 ${fileId}를 가진 피어 없음 (awareness 상태 수: ${provider.awareness.getStates().size})`)
+      return null
+    }
 
     // 랜덤하게 선택 (여러 피어에 분산)
-    return peers[Math.floor(Math.random() * peers.length)]?.uuid || null
+    const selected = peers[Math.floor(Math.random() * peers.length)]?.uuid || null
+    console.log(`[FileTransfer] 발신자 선택: ${selected?.slice(-8)} (후보 ${peers.length}명)`)
+    return selected
   }
 
   provider.on('status', (event: { connected: boolean }) => {
@@ -140,6 +162,9 @@ export function useFileTransfer(
 
     console.log(`[FileTransfer] 중단된 다운로드 ${interruptedDownloads.length}개 발견`)
 
+    // 약간의 지연 후 재개 (awareness 동기화 대기)
+    await new Promise(resolve => setTimeout(resolve, 2000))
+
     for (const state of interruptedDownloads) {
       try {
         // 파일 메타가 있는지 확인
@@ -149,12 +174,22 @@ export function useFileTransfer(
           continue
         }
 
-        console.log(`[FileTransfer] 다운로드 재개: ${state.fileName} (${state.receivedChunks.size}/${state.totalChunks} 청크)`)
+        // 파일을 가진 피어가 있는지 확인
+        const sender = findBestSender(state.fileId)
+        if (!sender) {
+          console.warn(`[FileTransfer] 재개 불가 - 피어 없음: ${state.fileName}`)
+          continue
+        }
+
+        console.log(`[FileTransfer] 다운로드 재개: ${state.fileName} (${state.receivedChunks.size}/${state.totalChunks} 청크) → ${sender.slice(-8)}`)
 
         // 다운로드 재시도 (백그라운드에서)
         requestFileP2P(state.fileId).catch(error => {
           console.error(`[FileTransfer] 재개 실패: ${state.fileId}`, error)
         })
+
+        // 동시에 여러 파일 재개하지 않도록 약간 간격 두기
+        await new Promise(resolve => setTimeout(resolve, 500))
       } catch (error) {
         console.error(`[FileTransfer] 재개 처리 오류:`, error)
       }
@@ -451,7 +486,8 @@ export function useFileTransfer(
     return blob
   }
 
-  async function requestFileP2P(fileId: string): Promise<Blob> {
+  async function requestFileP2P(fileId: string, retryCount = 0): Promise<Blob> {
+    const MAX_RETRIES = 3
     const meta = files.get(fileId)
     if (!meta || !meta.size) {
       throw new Error('파일 메타데이터 없음')
@@ -474,69 +510,86 @@ export function useFileTransfer(
     // FILE_DATA_THRESHOLD (256KB) 이상이면 직접 P2P
     const bestSender = findBestSender(fileId)
     if (!bestSender) {
+      // 피어를 찾을 수 없으면 잠시 대기 후 재시도
+      if (retryCount < MAX_RETRIES) {
+        console.log(`[FileTransfer] 피어 없음 - ${retryCount + 1}/${MAX_RETRIES} 재시도 대기 중...`)
+        await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)))
+        return requestFileP2P(fileId, retryCount + 1)
+      }
       throw new Error('파일을 가진 피어를 찾을 수 없습니다')
     }
 
-    console.log(`[FileTransfer] 최적 발신자 선택: ${bestSender.slice(-8)}`)
+    console.log(`[FileTransfer] 최적 발신자 선택: ${bestSender.slice(-8)} (시도 ${retryCount + 1}/${MAX_RETRIES + 1})`)
 
     // 타겟을 지정하여 요청 (일대일)
     console.log(`[FileTransfer] P2P 다운로드 요청: ${fileId} → ${bestSender.slice(-8)}`)
 
     // Offer 대기 및 수신
-    return new Promise<Blob>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup()
-        reject(new Error('파일 전송 타임아웃'))
-      }, TIMEOUT)
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup()
+          reject(new Error('파일 전송 타임아웃'))
+        }, TIMEOUT)
 
-      const handler = async () => {
-        for (const [, state] of provider.awareness.getStates()) {
-          const stateObj = state as Record<string, unknown>
+        const handler = async () => {
+          for (const [, state] of provider.awareness.getStates()) {
+            const stateObj = state as Record<string, unknown>
 
-          // 🔥 모든 'fileTransferOffer-'로 시작하는 키 탐색
-          for (const key in stateObj) {
-            if (!key.startsWith('fileTransferOffer-')) continue
+            // 🔥 모든 'fileTransferOffer-'로 시작하는 키 탐색
+            for (const key in stateObj) {
+              if (!key.startsWith('fileTransferOffer-')) continue
 
-            const transferOffer = stateObj[key] as FileTransferOffer | undefined
+              const transferOffer = stateObj[key] as FileTransferOffer | undefined
 
-            // Guard: Offer가 없거나 조건에 맞지 않으면 스킵
-            if (!transferOffer) continue
-            if (transferOffer.fileId !== fileId) continue
-            if (transferOffer.targetUuid !== myUuid) continue
-            if (transferOffer.senderUuid !== bestSender) continue // 선택된 발신자인지 확인
+              // Guard: Offer가 없거나 조건에 맞지 않으면 스킵
+              if (!transferOffer) continue
+              if (transferOffer.fileId !== fileId) continue
+              if (transferOffer.targetUuid !== myUuid) continue
+              if (transferOffer.senderUuid !== bestSender) continue // 선택된 발신자인지 확인
 
-            console.log(`[FileTransfer] Offer 감지: ${key}`)
+              console.log(`[FileTransfer] Offer 감지: ${key}`)
 
-            // Offer 처리
-            clearTimeout(timeout)
-            cleanup()
+              // Offer 처리
+              clearTimeout(timeout)
+              cleanup()
 
-            try {
-              const blob = await receiveFileDirect(transferOffer)
-              resolve(blob)
-            } catch (error) {
-              reject(error)
+              try {
+                const blob = await receiveFileDirect(transferOffer)
+                resolve(blob)
+              } catch (error) {
+                reject(error)
+              }
+              return
             }
-            return
           }
         }
-      }
 
-      const cleanup = () => {
-        clearTimeout(timeout)
-        provider.awareness.off('change', handler)
-      }
+        const cleanup = () => {
+          clearTimeout(timeout)
+          provider.awareness.off('change', handler)
+        }
 
-      provider.awareness.on('change', handler)
-      // 타겟 지정하여 요청
-      requestFile(fileId, myUuid, [], bestSender)
-      handler()
-    }).then(async (blob) => {
+        provider.awareness.on('change', handler)
+        // 타겟 지정하여 요청
+        requestFile(fileId, myUuid, [], bestSender)
+        handler()
+      })
+
       // P2P 다운로드 완료 후 파일 소유권 브로드캐스트
       updateFileOwnership(fileId)
       console.log(`[FileTransfer] P2P 다운로드 완료 후 소유권 브로드캐스트: ${fileId}`)
       return blob
-    })
+    } catch (error) {
+      // 실패 시 재시도
+      if (retryCount < MAX_RETRIES) {
+        const errorMsg = error instanceof Error ? error.message : '알 수 없는 오류'
+        console.warn(`[FileTransfer] 다운로드 실패 (${errorMsg}) - ${retryCount + 1}/${MAX_RETRIES} 재시도...`)
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)))
+        return requestFileP2P(fileId, retryCount + 1)
+      }
+      throw error
+    }
   }
 
   // 외부에서 파일 캐시 완료 시 호출 (예: 업로드 후)
