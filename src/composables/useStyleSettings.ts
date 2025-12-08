@@ -185,10 +185,19 @@ function hexToRgb(hex: string): string {
 
 // 다른 창에 설정 변경 알림
 function broadcastSettingsChange(newSettings: StyleSettings) {
+  // Vue reactive 객체를 plain object로 변환
+  const plainSettings = JSON.parse(JSON.stringify(newSettings))
+
   if (broadcastChannel) {
-    // Vue reactive 객체를 plain object로 변환하여 전송
-    const plainSettings = JSON.parse(JSON.stringify(newSettings))
+    // BroadcastChannel을 통한 전송 (file:// 프로토콜)
     broadcastChannel.postMessage({ type: 'settings-updated', settings: plainSettings })
+  }
+
+  // 로컬 서버에서 실행 중이면 main process를 통해 다른 창에 알림
+  if (isRunningOnLocalServer()) {
+    syncSettingsToMain(plainSettings).then(() => {
+      log.debug('Settings broadcasted via main process')
+    })
   }
 }
 
@@ -196,6 +205,16 @@ function broadcastSettingsChange(newSettings: StyleSettings) {
 function broadcastBackgroundChange(bgType: string) {
   if (broadcastChannel) {
     broadcastChannel.postMessage({ type: 'background-updated', backgroundType: bgType })
+  }
+
+  // 로컬 서버에서 실행 중이면 main process를 통해 알림
+  // (main process가 다른 창들에 background-changed 이벤트를 발송해야 함)
+  if (isRunningOnLocalServer()) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const electronApi = (window as any).electronApi
+    if (electronApi?.notifyBackgroundChanged) {
+      electronApi.notifyBackgroundChanged(bgType)
+    }
   }
 }
 
@@ -382,6 +401,15 @@ function setupMainSettingsListener(): void {
         applyCSSVariables(merged)
       })
     }
+    // 배경 이미지 변경 이벤트 리스너
+    if (electronApi?.onBackgroundChanged) {
+      electronApi.onBackgroundChanged((bgType: string) => {
+        log.debug('Received background change from main process:', bgType)
+        window.dispatchEvent(new CustomEvent('background-changed', {
+          detail: { type: bgType }
+        }))
+      })
+    }
   } catch (error) {
     log.error('Failed to setup main settings listener:', error)
   }
@@ -408,10 +436,8 @@ export function useStyleSettings() {
 
   // 초기화 - 설정 로드 및 BroadcastChannel 설정
   async function initialize(): Promise<void> {
-    // 로컬 서버에서 실행 중일 때는 main process에서 설정 변경 이벤트 리스너 등록
-    if (isRunningOnLocalServer()) {
-      setupMainSettingsListener()
-    }
+    // main process에서 설정 변경 이벤트 리스너 등록 (모든 창에서)
+    setupMainSettingsListener()
 
     // BroadcastChannel 설정 (file:// 프로토콜에서만 작동)
     if (!isRunningOnLocalServer() && !broadcastChannel) {

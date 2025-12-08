@@ -12,6 +12,9 @@ const router = useRouter()
 
 const roomId = ref(localStorage.getItem('roomId') || '')
 const name = ref(localStorage.getItem('name') || '')
+const appVersion = ref('')
+const updateCheckMessage = ref('')
+const isCheckingUpdate = ref(false)
 
 if (!localStorage.getItem('uuid')) {
   localStorage.setItem('uuid', crypto.randomUUID())
@@ -75,9 +78,40 @@ const goChat = async () => {
   }
 }
 
+const checkForUpdates = async () => {
+  if (!window.electronApi) return
+  
+  isCheckingUpdate.value = true
+  updateCheckMessage.value = ''
+  
+  try {
+    const result = await window.electronApi.checkForUpdates()
+    updateCheckMessage.value = result.message
+    
+    // 3초 후 메시지 제거
+    setTimeout(() => {
+      updateCheckMessage.value = ''
+    }, 3000)
+  } catch (error) {
+    console.error('Failed to check for updates:', error)
+    updateCheckMessage.value = '업데이트 확인 실패'
+  } finally {
+    isCheckingUpdate.value = false
+  }
+}
+
 onMounted(async () => {
   // 로컬 프로필 로드
   await initializeProfilePictures()
+  
+  // 앱 버전 가져오기
+  if (window.electronApi) {
+    try {
+      appVersion.value = await window.electronApi.getAppVersion()
+    } catch (error) {
+      console.error('Failed to get app version:', error)
+    }
+  }
 })
 </script>
 
@@ -134,7 +168,7 @@ onMounted(async () => {
           </button>
         </div>
 
-        <!-- 설정 (Electron 전용) -->
+        <!-- 설정 및 업데이트 (Electron 전용) -->
         <div v-if="isElectron" class="settings-section-home">
           <button @click="openSettings" class="settings-button">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -143,6 +177,25 @@ onMounted(async () => {
             </svg>
             <span>설정</span>
           </button>
+          
+          <button 
+            @click="checkForUpdates" 
+            class="update-button"
+            :disabled="isCheckingUpdate"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ 'spin': isCheckingUpdate }">
+              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+            </svg>
+            <span>{{ isCheckingUpdate ? '확인 중...' : '업데이트 확인' }}</span>
+          </button>
+          
+          <div v-if="updateCheckMessage" class="update-message">
+            {{ updateCheckMessage }}
+          </div>
+          
+          <div v-if="appVersion" class="version-info">
+            v{{ appVersion }}
+          </div>
         </div>
       </div>
     </div>
@@ -336,5 +389,93 @@ onMounted(async () => {
 
 .settings-button:hover svg {
   opacity: 1;
+}
+
+/* 업데이트 버튼 */
+.update-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-secondary);
+  color: var(--color-accent);
+  border: 1px dashed var(--color-primary-light);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  margin-top: var(--spacing-sm);
+}
+
+.update-button:hover:not(:disabled) {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-color: var(--color-secondary);
+  border-style: solid;
+}
+
+.update-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.update-button svg {
+  opacity: 0.7;
+  transition: all var(--transition-fast);
+}
+
+.update-button:hover:not(:disabled) svg {
+  opacity: 1;
+}
+
+.update-button svg.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 업데이트 메시지 */
+.update-message {
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 버전 정보 */
+.version-info {
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  font-family: monospace;
 }
 </style>

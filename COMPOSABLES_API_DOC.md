@@ -486,22 +486,144 @@ channel.onmessage = (e) => { /* 데이터 수신 */ }
 ### 개요
 **대용량 파일(256KB 이상) WebRTC DataChannel P2P 직접 전송**. 청크 단위 전송, 이어받기, 버퍼 관리를 자동 처리합니다.
 
+### 아키텍처 (리팩토링됨)
+**클래스 기반 설계**로 전면 리팩토링되어 안정성과 유지보수성이 대폭 개선되었습니다.
+
+```typescript
+FileSender 클래스
+├── 상태 머신: idle → handshake → transferring → completing → completed/failed
+├── 리소스 관리: ResourceManager로 자동 정리 (이벤트 리스너, 타이머)
+├── 플로우 컨트롤: ACK 기반 백프레셔 + 버퍼 관리
+└── 에러 처리: 타임아웃, 백트래킹, 재전송
+
+FileReceiver 클래스
+├── 상태 머신: idle → handshake → transferring → completed/failed
+├── 청크 검증: 중복 체크, 누락 청크 재요청
+├── IndexedDB 저장: 배치 저장으로 이어받기 지원
+└── 주기적 ACK: 송신자에게 수신 상태 실시간 전송
+
+ResourceManager 클래스
+└── 모든 리소스(리스너, 타이머) 추적 및 자동 정리
+```
+
 ### 설정값
-- **청크 크기**: 64KB
-- **최대 버퍼**: 12MB (high-water mark)
-- **ACK 윈도우**: 20개 청크마다
-- **DB 저장 간격**: 50개 청크마다 배치 저장
+- **청크 크기**: 32KB (고정, 느린 네트워크 최적화)
+- **최대 버퍼**: 4MB (high-water mark)
+- **버퍼 임계값**: 128KB (전송 전 대기)
+- **ACK 윈도우**: 10개 청크마다 확인
+- **ACK 타임아웃**: 5초
+- **DB 저장 간격**: 
+  - 청크 데이터: 100개마다 배치 저장 (3.2MB)
+  - 메타데이터: 20개마다 저장 (640KB)
+- **전송 타임아웃**: 5분
+- **수신 타임아웃**: 30초
+- **재시도 횟수**: 최대 3회
 
 ### 주요 함수
 
 ```typescript
-const { sendFileViaQueue, receiveFileDirect } = useDirectFileTransfer(provider, myUuid, filesMap)
+const { 
+  sendFileViaQueue,    // 전송 (글로벌 큐 경유)
+  receiveFileDirect,   // 수신
+  activeTransfers      // 현재 전송/수신 중인 파일 (디버깅용)
+} = useDirectFileTransfer(provider, myUuid, filesMap)
 
-// 전송 (글로벌 큐 경유)
+// 전송 (글로벌 큐 경유 - 우선순위 자동 결정)
 await sendFileViaQueue(fileId, targetUuid)
 
-// 수신
+// 수신 (자동 이어받기 지원)
 const blob = await receiveFileDirect(offer)
+```
+
+### 주요 개선사항
+
+#### 1. 버그 수정
+- ✅ 동시성 문제: 단일 진입점으로 `activeTransfers` 관리
+- ✅ 메모리 누수: `ResourceManager`로 모든 리소스 자동 정리
+- ✅ 데드락: 버퍼 대기와 ACK 대기 분리, 명확한 타임아웃
+- ✅ 백트래킹 불일치: ACK 핸들러에서 일관되게 처리
+- ✅ 진행률 오류: 실제 전송/수신 바이트 정확히 계산
+- ✅ 타임아웃 중복: `isResolved` 플래그로 중복 해결 방지
+- ✅ 이벤트 핸들러 누적: `finally` 블록에서 확실한 정리
+
+#### 2. 코드 품질
+- 타입 안전성 강화 (no `any`)
+- 명확한 책임 분리 (클래스별 단일 책임)
+- 예측 가능한 에러 처리
+- 일관된 로깅 및 디버깅
+
+### 전송 플로우
+
+#### 송신자 (FileSender)
+```
+1. Handshake
+   - 채널 대기 (5초 타임아웃)
+   - Start 메시지 전송
+   - 수신자 Ready 대기
+   - Resume 정보 수신 (이어받기 시)
+
+2. Transfer
+   - 이미 받은 청크 스킵
+   - ACK 기반 백프레셔 (10개 윈도우)
+   - 버퍼 관리 (4MB 임계값)
+   - 청크 전송 (32KB)
+   - 주기적 ACK 요청 (10초)
+
+3. Completion
+   - Complete 메시지 전송
+   - ReRequest 대기 (3초)
+   - 누락 청크 재전송 (최대 3회)
+   - 강제 완료 또는 성공
+```
+
+#### 수신자 (FileReceiver)
+```
+1. Handshake
+   - 부분 상태 로드 (이어받기)
+   - 청크 검증 (실제 데이터 확인)
+   - Start 응답 + Resume 정보 전송
+
+2. Receive
+   - 주기적 ACK 전송 (4초)
+   - 타임아웃 체크 (30초)
+   - 청크 수신 및 검증
+   - IndexedDB 배치 저장
+   - 중복 청크 무시 (ACK는 재전송)
+
+3. Complete
+   - 최종 저장 및 상태 로드
+   - 누락 청크 감지
+   - ReRequest 전송 (필요 시)
+   - Blob 생성 및 캐시 저장
+   - DB 상태 삭제
+```
+
+### 이어받기 (Resume) 지원
+
+```typescript
+// 송신자
+- receivedChunksSet에 수신자가 보유한 청크 추가
+- confirmedNextChunk 계산 (0부터 연속으로 받은 다음 인덱스)
+- 이미 받은 청크는 스킵
+
+// 수신자
+- IndexedDB에서 partialState 로드
+- 청크 검증 (메타데이터만 있고 데이터 없는 경우 제외)
+- Resume 메시지로 송신자에게 보유 청크 전송
+```
+
+### 진행률 업데이트
+
+```typescript
+// FileSender
+getCurrentProgress(): { sent: number; total: number }
+- 현재 전송한 바이트 = currentChunkIndex * CHUNK_SIZE
+- 1초마다 updateProgress 호출
+
+// FileReceiver  
+getCurrentProgress(): { received: number; total: number }
+- 현재 수신한 바이트 = receivedChunks.size * CHUNK_SIZE
+- 1초마다 updateProgress 호출
 ```
 
 ---

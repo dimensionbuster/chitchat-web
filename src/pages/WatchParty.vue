@@ -15,12 +15,22 @@ useStyleSettings()
 const props = defineProps<{
   roomId: string
   youtubeUrl?: string
+  userName?: string
 }>()
+
+// 디버깅: props 확인
+console.log('[WatchParty] Props received:', {
+  roomId: props.roomId,
+  youtubeUrl: props.youtubeUrl,
+  userName: props.userName
+})
 
 // YouTube API Key (.env에서 가져오기)
 const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || ''
 
 // Yjs 설정
+// WatchParty 전용 Y.Doc 생성 (채팅 메시지와 분리)
+// 같은 roomId를 사용하지만 문서를 분리하여 불필요한 데이터 동기화 방지
 const doc = new Y.Doc()
 const SIGNALING_SERVER_URL = import.meta.env.VITE_SIGNAL_URLS || 'wss://webrtc.chitchatdimension.com'
 
@@ -28,12 +38,19 @@ let provider: WebrtcProvider | null = null
 let persistence: IndexeddbPersistence | null = null
 
 // 사용자 ID 및 이름
+// WatchParty는 자체 UUID 생성 (채팅방과 별개)
 const uuid = localStorage.getItem('uuid') || crypto.randomUUID()
 if (!localStorage.getItem('uuid')) {
   localStorage.setItem('uuid', uuid)
 }
 const currentUserId = `user-${uuid}`
-const currentUserName = localStorage.getItem('name') || undefined
+
+// URL 파라미터로 전달된 이름이 있으면 사용, 없으면 localStorage에서
+const currentUserName = props.userName || localStorage.getItem('name') || undefined
+if (props.userName && localStorage.getItem('name') !== props.userName) {
+  localStorage.setItem('name', props.userName)
+}
+console.log('[WatchParty] Using userName:', currentUserName)
 
 // YouTube IFrame Player (타입은 라이브러리에서 자동 제공)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,11 +71,14 @@ const videoMetadataCache = ref<Map<string, VideoMetadata>>(new Map())
 
 // 플레이리스트 접기/펼치기 상태
 const myQueueCollapsed = ref(false)
+const playlistControlCollapsed = ref(false)
 const globalQueueCollapsed = ref(false)
 
 // 리사이저 드래그 상태
 const isResizing = ref(false)
 const myQueueHeight = ref(250) // 기본 높이 (px)
+const isResizingPlaylistControl = ref(false)
+const playlistControlHeight = ref(200) // 플레이리스트 제어 기본 높이 (px)
 const isResizingPlaylist = ref(false)
 const playlistWidth = ref(400) // 재생목록 기본 너비 (px)
 
@@ -123,18 +143,11 @@ function onPlayerReady() {
   console.log('[Player] Ready')
   playerReady.value = true
 
-  // 현재 재생중인 영상이 있으면 로드
+  // 현재 재생중인 영상이 있으면 로드 (항상 0초부터 시작)
   if (queue.value?.currentVideo) {
     const videoId = queue.value.currentVideo.videoId
-    const startTime = queue.value.currentTime || 0
-
-    // 영상 로드 (현재 시간부터 시작)
-    if (startTime > 0) {
-      console.log(`[Player] Loading video at time: ${startTime}s`)
-      player?.loadVideoById({ videoId, startSeconds: startTime })
-    } else {
-      player?.loadVideoById(videoId)
-    }
+    console.log(`[Player] Loading video from start: ${videoId}`)
+    player?.loadVideoById(videoId)
   }
 }
 
@@ -179,13 +192,8 @@ watch(
     console.log('[Player] Loading new video:', newVideo.videoId)
     isPlayerSyncing.value = true
 
-    // 새 영상 로드 시 현재 동기화된 시간부터 시작
-    const startTime = queue.value?.currentTime || 0
-    if (startTime > 0) {
-      player.loadVideoById({ videoId: newVideo.videoId, startSeconds: startTime })
-    } else {
-      player.loadVideoById(newVideo.videoId)
-    }
+    // 새 영상 로드 시 항상 0초부터 시작
+    player.loadVideoById(newVideo.videoId)
 
     setTimeout(() => {
       isPlayerSyncing.value = false
@@ -300,7 +308,7 @@ async function handleAddUrl() {
   }
 }
 
-// 리사이저 드래그 시작
+// 리사이저 드래그 시작 (내 대기열)
 function startResize(e: MouseEvent) {
   isResizing.value = true
   e.preventDefault()
@@ -318,6 +326,32 @@ function startResize(e: MouseEvent) {
 
   const onMouseUp = () => {
     isResizing.value = false
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+// 플레이리스트 제어 리사이저 드래그 시작
+function startResizePlaylistControl(e: MouseEvent) {
+  isResizingPlaylistControl.value = true
+  e.preventDefault()
+
+  const startY = e.clientY
+  const startHeight = playlistControlHeight.value
+
+  const onMouseMove = (moveEvent: MouseEvent) => {
+    if (!isResizingPlaylistControl.value) return
+
+    const deltaY = moveEvent.clientY - startY
+    const newHeight = Math.max(100, Math.min(400, startHeight + deltaY))
+    playlistControlHeight.value = newHeight
+  }
+
+  const onMouseUp = () => {
+    isResizingPlaylistControl.value = false
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
   }
@@ -422,16 +456,31 @@ const handleMinimize = () => {
 
 // 초기화
 onMounted(async () => {
-  // IndexedDB persistence
-  persistence = new IndexeddbPersistence(`chitchat-${props.roomId}`, doc)
+  // IndexedDB persistence (WatchParty 전용 네임스페이스 사용)
+  // 채팅방과 다른 데이터베이스를 사용하여 채팅 메시지 로드 방지
+  persistence = new IndexeddbPersistence(`watchparty-${props.roomId}`, doc)
 
-  // WebRTC provider
-  provider = new WebrtcProvider(props.roomId, doc, {
+  // WebRTC provider (WatchParty 전용 룸 사용)
+  // 채팅방과 다른 WebRTC 룸을 사용하여 채팅 데이터 동기화 방지
+  provider = new WebrtcProvider(`watchparty-${props.roomId}`, doc, {
     signaling: [SIGNALING_SERVER_URL],
   })
 
+  // Awareness에 사용자 정보 설정 (다른 사용자들이 볼 수 있도록)
+  // isWatchParty 플래그를 추가하여 접속자 목록에서 필터링
+  if (provider) {
+    provider.awareness.setLocalStateField('userUuid', uuid)
+    if (currentUserName) {
+      // 채팅방과 동일한 형식으로 닉네임 생성 (닉네임 + UUID 뒷부분)
+      const formattedName = currentUserName.trim() ? `${currentUserName.trim()}${currentUserId.slice(-4)}` : `User ${currentUserId.slice(-4)}`
+      provider.awareness.setLocalStateField('nickname', formattedName)
+    }
+    // WatchParty 피어임을 표시 (접속자 목록에서 제외하기 위함)
+    provider.awareness.setLocalStateField('isWatchParty', true)
+  }
+
   // Queue 초기화 (사용자 이름 전달)
-  queue.value = useWatchPartyQueue(doc, currentUserId, currentUserName)
+  queue.value = useWatchPartyQueue(doc, currentUserId, currentUserName, provider)
 
   // YouTube Player 초기화
   await nextTick()
@@ -486,13 +535,13 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="content" :class="{ resizing: isResizing || isResizingPlaylist }">
+    <div class="content" :class="{ resizing: isResizing || isResizingPlaylistControl || isResizingPlaylist }">
       <!-- 왼쪽: 플레이어 -->
       <div class="player-section">
         <div class="player-container">
           <div id="youtube-player"></div>
           <!-- 드래그 중 iframe 이벤트 차단용 오버레이 -->
-          <div v-if="isResizing || isResizingPlaylist" class="drag-overlay"></div>
+          <div v-if="isResizing || isResizingPlaylistControl || isResizingPlaylist" class="drag-overlay"></div>
         </div>
 
         <!-- 재생 컨트롤 -->
@@ -608,11 +657,56 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 수평 리사이저 (내 대기열 ↔ 다음 재생 예정) -->
+        <!-- 수평 리사이저 (내 대기열 ↔ 플레이리스트 제어) -->
         <div
           v-if="!myQueueCollapsed"
           class="resizer"
           @mousedown="startResize"
+          title="드래그하여 크기 조절"
+        ></div>
+
+        <!-- 플레이리스트 제어 -->
+        <div class="playlist-control" :style="{ height: playlistControlCollapsed ? 'auto' : `${playlistControlHeight}px` }">
+          <div class="queue-header">
+            <h4>플레이리스트 제어 ({{ queue?.allUsers?.length || 0 }})</h4>
+            <button
+              @click="playlistControlCollapsed = !playlistControlCollapsed"
+              class="collapse-btn"
+              title="접기/펼치기"
+            >
+              {{ playlistControlCollapsed ? '▼' : '▲' }}
+            </button>
+          </div>
+          <div v-if="!playlistControlCollapsed" class="user-playlist-toggles">
+            <div
+              v-for="userId in queue?.allUsers"
+              :key="userId"
+              class="user-toggle"
+            >
+              <label class="toggle-label">
+                <input
+                  type="checkbox"
+                  :checked="!queue?.isUserDisabled(userId)"
+                  @change="(e) => queue?.toggleUserPlaylist(userId, (e.target as HTMLInputElement).checked)"
+                  class="toggle-checkbox"
+                />
+                <span class="toggle-text">
+                  {{ queue?.userNames.get(userId) || userId.replace('user-', '').slice(0, 8) }}
+                  <span class="queue-count">({{ queue?.userQueues.get(userId)?.length || 0 }})</span>
+                </span>
+              </label>
+            </div>
+            <div v-if="!queue?.allUsers || queue.allUsers.length === 0" class="no-users">
+              아직 대기열이 없습니다
+            </div>
+          </div>
+        </div>
+
+        <!-- 수평 리사이저 (플레이리스트 제어 ↔ 다음 재생 예정) -->
+        <div
+          v-if="!playlistControlCollapsed"
+          class="resizer"
+          @mousedown="startResizePlaylistControl"
           title="드래그하여 크기 조절"
         ></div>
 
@@ -1287,5 +1381,71 @@ onUnmounted(() => {
 
 .context-menu-item:hover {
   background: var(--wp-bg-hover);
+}
+
+/* 플레이리스트 제어 */
+.playlist-control {
+  background: var(--wp-bg-secondary);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 50px;
+  overflow: hidden;
+}
+
+.user-playlist-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.user-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 4px;
+  transition: background 0.2s;
+  width: 100%;
+}
+
+.toggle-label:hover {
+  background: var(--wp-bg-hover);
+}
+
+.toggle-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--wp-accent-primary);
+}
+
+.toggle-text {
+  font-size: 13px;
+  color: var(--wp-text-primary);
+  user-select: none;
+}
+
+.queue-count {
+  font-size: 11px;
+  color: var(--wp-text-secondary);
+  margin-left: 4px;
+}
+
+.no-users {
+  text-align: center;
+  color: var(--wp-text-secondary);
+  font-size: 12px;
+  padding: 12px;
 }
 </style>

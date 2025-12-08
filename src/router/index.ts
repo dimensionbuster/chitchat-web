@@ -54,10 +54,15 @@ const router = createRouter({
       path: '/watch-party',
       name: 'WatchParty',
       component: WatchParty,
-      props: (route) => ({
-        roomId: (route.query.roomId as string) || 'default-room',
-        youtubeUrl: (route.query.youtubeUrl as string) || '',
-      }),
+      props: (route) => {
+        const props = {
+          roomId: (route.query.roomId as string) || 'default-room',
+          youtubeUrl: route.query.youtubeUrl as string | undefined,
+          userName: route.query.userName as string | undefined,
+        }
+        console.log('[Router] WatchParty props:', props)
+        return props
+      },
     },
   ],
 })

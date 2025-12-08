@@ -22,8 +22,10 @@ export function useConnectedUsers(provider: WebrtcProvider, currentUserUuid: str
     for (const [clientId, state] of awarenessStates) {
       const stateObj = state as Record<string, unknown>
       const userUuid = stateObj.userUuid as string | undefined
+      const isWatchParty = stateObj.isWatchParty as boolean | undefined
 
-      if (userUuid && userUuid !== currentUserUuid) {
+      // WatchParty 피어는 제외 (같은 사용자의 별도 창이므로)
+      if (userUuid && userUuid !== currentUserUuid && !isWatchParty) {
         // 닉네임은 awareness에서 가져오기 (여러 위치 확인)
         const userObj = stateObj.user as { uuid?: string; nickname?: string } | undefined
         const nickname =

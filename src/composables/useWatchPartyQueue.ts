@@ -1,12 +1,13 @@
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as Y from 'yjs'
+import type { WebrtcProvider } from 'y-webrtc'
 import type { QueueItem } from './useYouTubePlaylist'
 
 /**
  * Watch Party 글로벌 대기열 관리
  * 각 사용자의 개인 대기열을 라운드 로빈 방식으로 무한 순환
  */
-export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUserName?: string) {
+export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUserName?: string, provider?: WebrtcProvider) {
   // Yjs Map: userId -> QueueItem[]
   const userQueuesMap = doc.getMap<QueueItem[]>('watchPartyQueues')
 
@@ -16,15 +17,46 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
   // Yjs Map: userId -> userName (사용자 이름 매핑)
   const userNamesMap = doc.getMap<string>('watchPartyUserNames')
 
+  // Yjs Map: 비활성화된 사용자 목록 (userId -> boolean)
+  const disabledUsersMap = doc.getMap<boolean>('watchPartyDisabledUsers')
+
   // 로컬 상태
   const userQueues = ref<Map<string, QueueItem[]>>(new Map())
   const userNames = ref<Map<string, string>>(new Map())
+  const disabledUsers = ref<Set<string>>(new Set())
   const isPlaying = ref(false)
   const currentTime = ref(0)
 
   // 현재 사용자 이름 등록
   if (currentUserName) {
     userNamesMap.set(currentUserId, currentUserName)
+  }
+
+  // Awareness에서 다른 사용자들의 이름 동기화
+  const syncUserNamesFromAwareness = () => {
+    if (!provider) return
+
+    const awarenessStates = provider.awareness.getStates()
+    for (const [, state] of awarenessStates) {
+      const stateObj = state as Record<string, unknown>
+      const userUuid = stateObj.userUuid as string | undefined
+      const nickname = stateObj.nickname as string | undefined
+
+      if (userUuid && nickname) {
+        const userId = `user-${userUuid}`
+        const existingName = userNamesMap.get(userId)
+
+        // Yjs Map에 다른 사용자의 이름 저장 (없거나 다른 경우만)
+        if (!existingName || existingName !== nickname) {
+          userNamesMap.set(userId, nickname)
+          console.log(`[WatchPartyQueue] Synced user name: ${userId} -> ${nickname}`)
+        }
+      }
+    }
+  }
+
+  const handleAwarenessChange = () => {
+    syncUserNamesFromAwareness()
   }
 
   // 현재 재생 위치 (라운드로빈)
@@ -35,9 +67,9 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
   const currentVideoId = ref<string | null>(null)
 
   /**
-   * 활성 사용자 목록 (대기열이 있는 사용자만)
+   * 모든 사용자 목록 (대기열이 있는 사용자 전체 - 비활성화 포함)
    */
-  const activeUsers = computed(() => {
+  const allUsers = computed(() => {
     const users: string[] = []
     userQueues.value.forEach((queue, userId) => {
       if (queue.length > 0) {
@@ -45,6 +77,13 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       }
     })
     return users.sort() // 일관된 순서를 위해 정렬
+  })
+
+  /**
+   * 활성 사용자 목록 (대기열이 있고 비활성화되지 않은 사용자만)
+   */
+  const activeUsers = computed(() => {
+    return allUsers.value.filter(userId => !disabledUsers.value.has(userId))
   })
 
   /**
@@ -161,6 +200,15 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       newNames.set(userId, name)
     })
     userNames.value = newNames
+
+    // 비활성화된 사용자 동기화
+    const newDisabled = new Set<string>()
+    disabledUsersMap.forEach((disabled, userId) => {
+      if (disabled) {
+        newDisabled.add(userId)
+      }
+    })
+    disabledUsers.value = newDisabled
 
     // 재생 상태 동기화
     const videoId = playbackStateMap.get('videoId') as string | null
@@ -506,15 +554,50 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     syncFromYjs()
   })
 
+  disabledUsersMap.observe(() => {
+    syncFromYjs()
+  })
+
   // 초기 동기화
   syncFromYjs()
+
+  // Awareness 이벤트 리스너 설정
+  if (provider) {
+    onMounted(() => {
+      // 초기 사용자 이름 동기화
+      syncUserNamesFromAwareness()
+
+      // Awareness 변경 이벤트 리스너
+      provider.awareness.on('change', handleAwarenessChange)
+    })
+
+    onUnmounted(() => {
+      provider.awareness.off('change', handleAwarenessChange)
+    })
+  }
 
   // 내 큐 상태 (computed)
   const myQueue = computed(() => userQueues.value.get(currentUserId) || [])
 
+  /**
+   * 사용자 플레이리스트 활성화/비활성화 토글
+   */
+  function toggleUserPlaylist(userId: string, enabled: boolean) {
+    disabledUsersMap.set(userId, !enabled)
+    console.log(`[WatchPartyQueue] User ${userId} playlist ${enabled ? 'enabled' : 'disabled'}`)
+  }
+
+  /**
+   * 사용자가 비활성화되었는지 확인
+   */
+  function isUserDisabled(userId: string): boolean {
+    return disabledUsers.value.has(userId)
+  }
+
   return {
     // 상태
     userQueues,
+    userNames,
     globalQueue,
     currentVideo,
     nextVideo,
@@ -524,6 +607,8 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     isPlaying,
     currentTime,
     activeUsers,
+    allUsers,
+    disabledUsers,
 
     // 메서드
     addToMyQueue,
@@ -539,5 +624,7 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     togglePlayback,
     updateTime,
     seekTo,
+    toggleUserPlaylist,
+    isUserDisabled,
   }
 }

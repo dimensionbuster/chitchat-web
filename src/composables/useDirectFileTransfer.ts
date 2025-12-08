@@ -10,69 +10,876 @@ import {
 } from './useGlobalDataChannelQueue'
 import { useFileTransferState } from './useFileTransferState'
 
-const { saveChunksBatch } = useFileTransferState()
+// ===== Constants =====
+const CHUNK_SIZE = 32 * 1024 // 32KB
+const MAX_BUFFER_SIZE = 4 * 1024 * 1024 // 4MB
+const BUFFER_LOW_WATERMARK = 512 * 1024 // 512KB
+const BUFFER_CRITICAL = 128 * 1024 // 128KB
+const ACK_WINDOW = 10 // 청크 단위
+const ACK_TIMEOUT = 5000 // ms
+const ACK_REQUEST_INTERVAL = 10000 // ms
+const DB_SAVE_CHUNK_INTERVAL = 100 // 청크 단위
+const DB_SAVE_META_INTERVAL = 20 // 청크 단위
+const HANDSHAKE_TIMEOUT = 5000 // ms
+const RESUME_INFO_TIMEOUT = 3000 // ms
+const TRANSFER_TIMEOUT = 5 * 60 * 1000 // 5분
+const RECEIVE_TIMEOUT = 30000 // 30초
+const PERIODIC_ACK_INTERVAL = 4000 // ms
+const BUFFER_CHECK_INTERVAL = 100 // ms
+const MAX_RETRIES = 3
 
-// 고정 청크 크기 설정 (느린 네트워크 환경 최적화)
-const CHUNK_SIZE = 32 * 1024 // 32KB (고정) - 느린 네트워크에서 안정성 우선
-
-// 버퍼 설정 (느린 네트워크 환경)
-const MAX_BUFFER_SIZE = 4 * 1024 * 1024 // 4MB (high-water mark) - 느린 네트워크에서 안정적
-const BUFFER_LOW_WATERMARK = 512 * 1024 // 512KB (low-water mark) - resume 시점
-const ACK_WINDOW = 10 // 10개 청크마다 ACK 대기 (320KB) - 느린 네트워크에서 더 자주 확인
-const ACK_TIMEOUT = 5000 // ACK 대기 타임아웃 5초 (더 빠르게 복구)
-const ACK_REQUEST_INTERVAL_IN_WAIT = 2000 // ACK 대기 중 재요청 간격 2초 - 느린 네트워크 고려
-const DB_SAVE_CHUNK_INTERVAL = 100 // 100개 청크마다 DB 배치 저장 (3.2MB) - 더 자주 저장하여 손실 최소화
-const DB_SAVE_META_INTERVAL = 20 // 20개 청크마다 메타데이터 저장 (640KB) - 더 자주 저장
-const BUFFER_WAIT_TIMEOUT = 30000 // 버퍼 대기 최대 30초
-const BUFFER_CHECK_INTERVAL = 200 // 버퍼 체크 간격 200ms - 느린 네트워크에서 CPU 부담 감소
-
+// ===== Types =====
 type StartMessage = {
   type: 'start'
   totalChunks: number
   fileSize: number
-  chunkSize: number // 송신자가 사용하는 청크 크기 (동적)
-  hasPartialData?: boolean // 수신자가 이어받기 데이터를 가지고 있는지 여부
+  chunkSize: number
+  hasPartialData?: boolean
 }
 
-type CompleteMessage = {
-  type: 'complete'
-}
-
-type ErrorMessage = {
-  type: 'error'
-  message: string
-}
-
+type CompleteMessage = { type: 'complete' }
+type ErrorMessage = { type: 'error'; message: string }
 type AckMessage = {
   type: 'ack'
-  receivedCount: number // 수신자가 실제로 받은 총 청크 수
-  nextChunkIndex: number // 수신자가 다음에 받고 싶은 청크 인덱스 (이어받기 정보 포함)
-  lastContinuousIndex: number // 0부터 연속으로 받은 마지막 청크 인덱스 (-1이면 아직 없음)
+  receivedCount: number
+  nextChunkIndex: number
+  lastContinuousIndex: number
+}
+type ResumeMessage = { type: 'resume'; receivedChunks: number[] }
+type RequestAckMessage = { type: 'request-ack' }
+type ReRequestMessage = { type: 'reRequest'; missingChunks: number[] }
+
+type TransferMessage =
+  | StartMessage
+  | CompleteMessage
+  | ErrorMessage
+  | AckMessage
+  | ResumeMessage
+  | RequestAckMessage
+  | ReRequestMessage
+
+type TransferState = 'idle' | 'handshake' | 'transferring' | 'completing' | 'completed' | 'failed'
+
+// ===== 리소스 관리 클래스 =====
+class ResourceManager {
+  private cleanupFns: Array<() => void> = []
+
+  add(cleanup: () => void): void {
+    this.cleanupFns.push(cleanup)
+  }
+
+  cleanup(): void {
+    this.cleanupFns.forEach(fn => {
+      try {
+        fn()
+      } catch (error) {
+        console.warn('[ResourceManager] Cleanup error:', error)
+      }
+    })
+    this.cleanupFns = []
+  }
 }
 
-type ResumeMessage = {
-  type: 'resume'
-  receivedChunks: number[]
+// ===== 송신자 클래스 =====
+class FileSender {
+  private state: TransferState = 'idle'
+  private resources = new ResourceManager()
+  private aborted = false
+  private confirmedNextChunk = 0
+  private receivedChunksSet = new Set<number>()
+  private lastProgressTime = Date.now()
+  private lastAckRequestTime = Date.now()
+  private currentChunkIndex = 0 // 현재 전송 중인 청크 인덱스
+
+  constructor(
+    private fileId: string,
+    private targetUuid: string,
+    private fileBlob: Blob,
+    private totalChunks: number,
+    private fileSize: number,
+    private transferKey: string,
+    private onProgress?: (sent: number, total: number) => void,
+    private checkCancelled?: () => boolean
+  ) {}
+
+  async send(channel: RTCDataChannel): Promise<void> {
+    try {
+      this.state = 'handshake'
+      await this.waitForChannelOpen(channel)
+      await this.performHandshake(channel)
+
+      this.state = 'transferring'
+      await this.transferChunks(channel)
+
+      this.state = 'completing'
+      await this.handleCompletion(channel)
+
+      this.state = 'completed'
+    } catch (error) {
+      this.state = 'failed'
+      throw error
+    } finally {
+      this.resources.cleanup()
+    }
+  }
+
+  abort(): void {
+    this.aborted = true
+    this.state = 'failed'
+  }
+
+  private async waitForChannelOpen(channel: RTCDataChannel): Promise<void> {
+    if (channel.readyState === 'open') return
+
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Channel open timeout'))
+      }, HANDSHAKE_TIMEOUT)
+
+      const openHandler = () => {
+        clearTimeout(timeout)
+        resolve()
+      }
+
+      const errorHandler = () => {
+        clearTimeout(timeout)
+        reject(new Error('Channel error'))
+      }
+
+      channel.addEventListener('open', openHandler, { once: true })
+      channel.addEventListener('error', errorHandler, { once: true })
+
+      this.resources.add(() => {
+        clearTimeout(timeout)
+        channel.removeEventListener('open', openHandler)
+        channel.removeEventListener('error', errorHandler)
+      })
+    })
+  }
+
+  private async performHandshake(channel: RTCDataChannel): Promise<void> {
+    // Send start message
+    const startMsg: StartMessage = {
+      type: 'start',
+      totalChunks: this.totalChunks,
+      fileSize: this.fileSize,
+      chunkSize: CHUNK_SIZE
+    }
+    channel.send(JSON.stringify(startMsg))
+
+    // Setup message handler for handshake
+    let receiverReady = false
+    let resumeReceived = false
+    let receiverHasPartialData = false
+
+    const messageHandler = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return
+
+      try {
+        const msg = JSON.parse(event.data) as TransferMessage
+
+        if (msg.type === 'start') {
+          receiverHasPartialData = msg.hasPartialData || false
+          receiverReady = true
+        } else if (msg.type === 'resume') {
+          msg.receivedChunks.forEach(idx => this.receivedChunksSet.add(idx))
+
+          // Calculate next chunk
+          let nextChunk = 0
+          while (nextChunk < this.totalChunks && this.receivedChunksSet.has(nextChunk)) {
+            nextChunk++
+          }
+          this.confirmedNextChunk = nextChunk
+          resumeReceived = true
+        } else if (msg.type === 'ack') {
+          if (msg.nextChunkIndex > this.confirmedNextChunk) {
+            this.confirmedNextChunk = msg.nextChunkIndex
+          }
+        }
+      } catch (error) {
+        console.warn('[Sender] Message parse error:', error)
+      }
+    }
+
+    channel.addEventListener('message', messageHandler)
+    this.resources.add(() => channel.removeEventListener('message', messageHandler))
+
+    // Wait for receiver ready
+    const startWaitStart = Date.now()
+    while (!receiverReady && Date.now() - startWaitStart < HANDSHAKE_TIMEOUT) {
+      this.checkAbort()
+      await this.sleep(50)
+    }
+
+    if (!receiverReady) {
+      throw new Error('Handshake timeout: receiver not ready')
+    }
+
+    // Wait for resume info if receiver has partial data
+    if (receiverHasPartialData) {
+      const resumeWaitStart = Date.now()
+      while (!resumeReceived && Date.now() - resumeWaitStart < RESUME_INFO_TIMEOUT) {
+        this.checkAbort()
+        await this.sleep(50)
+      }
+
+      if (resumeReceived) {
+        console.log(`[Sender] Resume from chunk ${this.confirmedNextChunk}`)
+      }
+    }
+  }
+
+  private async transferChunks(channel: RTCDataChannel): Promise<void> {
+    this.currentChunkIndex = this.confirmedNextChunk
+    const ackHandler = this.createAckHandler(channel)
+
+    try {
+      while (this.currentChunkIndex < this.totalChunks) {
+        this.checkAbort()
+        this.checkTimeout()
+
+        // Skip already received chunks
+        if (this.receivedChunksSet.has(this.currentChunkIndex)) {
+          this.currentChunkIndex++
+          this.updateProgressUI()
+          continue
+        }
+
+        // Flow control: ACK-based backpressure
+        await this.waitForAck(channel, this.currentChunkIndex)
+
+        // Flow control: Buffer management
+        await this.waitForBuffer(channel)
+
+        // Send chunk
+        await this.sendChunk(channel, this.currentChunkIndex)
+        this.currentChunkIndex++
+
+        // Update progress
+        this.lastProgressTime = Date.now()
+        this.updateProgressUI()
+
+        // Periodic ACK request
+        if (Date.now() - this.lastAckRequestTime > ACK_REQUEST_INTERVAL) {
+          this.requestAck(channel)
+          this.lastAckRequestTime = Date.now()
+        }
+      }
+    } finally {
+      channel.removeEventListener('message', ackHandler)
+    }
+  }
+
+  private createAckHandler(channel: RTCDataChannel): (event: MessageEvent) => void {
+    const handler = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return
+
+      try {
+        const msg = JSON.parse(event.data) as TransferMessage
+
+        if (msg.type === 'ack') {
+          if (msg.nextChunkIndex > this.confirmedNextChunk) {
+            this.confirmedNextChunk = msg.nextChunkIndex
+
+            // Update received chunks set
+            if (msg.lastContinuousIndex >= 0) {
+              for (let idx = 0; idx <= msg.lastContinuousIndex; idx++) {
+                this.receivedChunksSet.add(idx)
+              }
+            }
+          }
+        } else if (msg.type === 'reRequest') {
+          const missingChunks = msg.missingChunks
+          missingChunks.forEach(idx => this.receivedChunksSet.delete(idx))
+
+          // Backtrack to minimum missing chunk
+          const minMissing = Math.min(...missingChunks)
+          if (this.confirmedNextChunk > minMissing) {
+            this.confirmedNextChunk = minMissing
+          }
+        }
+      } catch (error) {
+        console.warn('[Sender] ACK handler error:', error)
+      }
+    }
+
+    channel.addEventListener('message', handler)
+    return handler
+  }
+
+  private async waitForAck(channel: RTCDataChannel, currentChunkIndex: number): Promise<void> {
+    const gap = currentChunkIndex - this.confirmedNextChunk
+
+    if (gap < ACK_WINDOW) return
+
+    const waitStart = Date.now()
+    while (currentChunkIndex - this.confirmedNextChunk >= ACK_WINDOW) {
+      this.checkAbort()
+
+      if (Date.now() - waitStart > ACK_TIMEOUT) {
+        // Request ACK and wait
+        this.requestAck(channel)
+        await this.sleep(1000)
+
+        // If still no progress, backtrack
+        if (currentChunkIndex - this.confirmedNextChunk >= ACK_WINDOW) {
+          console.warn('[Sender] ACK timeout, backtracking')
+          break
+        }
+      }
+
+      await this.sleep(100)
+    }
+  }
+
+  private async waitForBuffer(channel: RTCDataChannel): Promise<void> {
+    if (channel.bufferedAmount <= MAX_BUFFER_SIZE) return
+
+    const waitStart = Date.now()
+    while (channel.bufferedAmount > BUFFER_LOW_WATERMARK) {
+      this.checkAbort()
+
+      if (Date.now() - waitStart > TRANSFER_TIMEOUT) {
+        throw new Error('Buffer wait timeout')
+      }
+
+      await this.sleep(BUFFER_CHECK_INTERVAL)
+    }
+  }
+
+  private async sendChunk(channel: RTCDataChannel, chunkIndex: number): Promise<void> {
+    // Wait for buffer before send
+    while (channel.bufferedAmount > BUFFER_CRITICAL) {
+      this.checkAbort()
+      await this.sleep(20)
+    }
+
+    // Slice and send
+    const chunkStart = chunkIndex * CHUNK_SIZE
+    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, this.fileSize)
+    const chunkBlob = this.fileBlob.slice(chunkStart, chunkEnd)
+    const chunkData = await chunkBlob.arrayBuffer()
+
+    // Combine index + data
+    const combinedBuffer = new ArrayBuffer(4 + chunkData.byteLength)
+    const view = new DataView(combinedBuffer)
+    view.setUint32(0, chunkIndex, true)
+    new Uint8Array(combinedBuffer, 4).set(new Uint8Array(chunkData))
+
+    channel.send(combinedBuffer)
+  }
+
+  private async handleCompletion(channel: RTCDataChannel): Promise<void> {
+    let retryCount = 0
+    let reRequestReceived = false
+    let missingChunks: number[] = []
+
+    const reRequestHandler = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return
+
+      try {
+        const msg = JSON.parse(event.data) as TransferMessage
+        if (msg.type === 'reRequest') {
+          missingChunks = msg.missingChunks
+          reRequestReceived = true
+        }
+      } catch (error) {
+        console.warn('[Sender] ReRequest handler error:', error)
+      }
+    }
+
+    channel.addEventListener('message', reRequestHandler)
+    this.resources.add(() => channel.removeEventListener('message', reRequestHandler))
+
+    while (retryCount < MAX_RETRIES) {
+      // Wait for buffer to clear
+      while (channel.bufferedAmount > 0) {
+        await this.sleep(100)
+      }
+
+      // Send complete message
+      const completeMsg: CompleteMessage = { type: 'complete' }
+      channel.send(JSON.stringify(completeMsg))
+
+      // Wait for reRequest
+      reRequestReceived = false
+      missingChunks = []
+      const waitStart = Date.now()
+
+      while (!reRequestReceived && Date.now() - waitStart < 3000) {
+        this.checkAbort()
+        await this.sleep(100)
+
+        if (channel.readyState !== 'open') break
+      }
+
+      // No reRequest means success
+      if (!reRequestReceived || missingChunks.length === 0) {
+        console.log('[Sender] Transfer completed successfully')
+        return
+      }
+
+      // Resend missing chunks
+      console.log(`[Sender] Resending ${missingChunks.length} chunks`)
+      for (const chunkIndex of missingChunks) {
+        this.checkAbort()
+        await this.sendChunk(channel, chunkIndex)
+      }
+
+      retryCount++
+    }
+
+    if (retryCount >= MAX_RETRIES) {
+      console.warn('[Sender] Max retries reached, forcing completion')
+    }
+  }
+
+  private requestAck(channel: RTCDataChannel): void {
+    if (channel.readyState !== 'open') return
+
+    try {
+      const msg: RequestAckMessage = { type: 'request-ack' }
+      channel.send(JSON.stringify(msg))
+    } catch (error) {
+      console.warn('[Sender] ACK request failed:', error)
+    }
+  }
+
+  private updateProgressUI(): void {
+    if (this.onProgress) {
+      const sentBytes = Math.min(this.currentChunkIndex * CHUNK_SIZE, this.fileSize)
+      this.onProgress(sentBytes, this.fileSize)
+    }
+  }
+
+  getCurrentProgress(): { sent: number; total: number } {
+    const sentBytes = Math.min(this.currentChunkIndex * CHUNK_SIZE, this.fileSize)
+    return { sent: sentBytes, total: this.fileSize }
+  }
+
+  private checkAbort(): void {
+    if (this.aborted || (this.checkCancelled && this.checkCancelled())) {
+      throw new Error('Transfer aborted')
+    }
+  }
+
+  private checkTimeout(): void {
+    if (Date.now() - this.lastProgressTime > TRANSFER_TIMEOUT) {
+      throw new Error('Transfer timeout')
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
 }
 
-type RequestAckMessage = {
-  type: 'request-ack'
+// ===== 수신자 클래스 =====
+class FileReceiver {
+  private state: TransferState = 'idle'
+  private resources = new ResourceManager()
+  private aborted = false
+  private lastChunkReceiveTime = Date.now()
+  private partialState: {
+    fileId: string
+    fileName: string
+    totalChunks: number
+    chunkSize: number
+    totalBytes: number
+    receivedChunks: Set<number>
+    chunks: Map<number, ArrayBuffer>
+    timestamp: number
+    transferKey: string
+  } | null = null
+  private pendingChunksBuffer = new Map<number, ArrayBuffer>()
+  private isSaving = false
+
+  constructor(
+    private offer: FileTransferOffer,
+    private transferKey: string
+  ) {}
+
+  async receive(channel: RTCDataChannel): Promise<Blob> {
+    try {
+      this.state = 'handshake'
+      await this.loadPartialState()
+      await this.waitForChannelOpen(channel)
+      await this.performHandshake(channel)
+
+      this.state = 'transferring'
+      const blob = await this.receiveChunks(channel)
+
+      this.state = 'completed'
+      return blob
+    } catch (error) {
+      this.state = 'failed'
+      throw error
+    } finally {
+      this.resources.cleanup()
+    }
+  }
+
+  abort(): void {
+    this.aborted = true
+    this.state = 'failed'
+  }
+
+  private async loadPartialState(): Promise<void> {
+    const { loadDownloadState } = useFileTransferState()
+    const loaded = await loadDownloadState(this.offer.fileId)
+
+    if (loaded) {
+      // Validate chunks
+      const validChunks = new Set<number>()
+      for (const idx of loaded.receivedChunks) {
+        if (loaded.chunks.has(idx)) {
+          validChunks.add(idx)
+        }
+      }
+
+      loaded.receivedChunks = validChunks
+      this.partialState = loaded
+      console.log(`[Receiver] Resume from ${validChunks.size} chunks`)
+    } else {
+      // Create new state
+      this.partialState = {
+        fileId: this.offer.fileId,
+        fileName: this.offer.fileId,
+        totalChunks: this.offer.totalChunks,
+        chunkSize: CHUNK_SIZE,
+        totalBytes: this.offer.fileSize,
+        receivedChunks: new Set(),
+        chunks: new Map(),
+        timestamp: Date.now(),
+        transferKey: this.transferKey
+      }
+    }
+  }
+
+  private async waitForChannelOpen(channel: RTCDataChannel): Promise<void> {
+    if (channel.readyState === 'open') return
+
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Channel open timeout'))
+      }, HANDSHAKE_TIMEOUT)
+
+      const openHandler = () => {
+        clearTimeout(timeout)
+        resolve()
+      }
+
+      const errorHandler = () => {
+        clearTimeout(timeout)
+        reject(new Error('Channel error'))
+      }
+
+      channel.addEventListener('open', openHandler, { once: true })
+      channel.addEventListener('error', errorHandler, { once: true })
+
+      this.resources.add(() => {
+        clearTimeout(timeout)
+        channel.removeEventListener('open', openHandler)
+        channel.removeEventListener('error', errorHandler)
+      })
+    })
+  }
+
+  private async performHandshake(channel: RTCDataChannel): Promise<void> {
+    if (!this.partialState) throw new Error('State not loaded')
+
+    const hasPartialData = this.partialState.receivedChunks.size > 0
+
+    // Send start response
+    const startMsg: StartMessage = {
+      type: 'start',
+      totalChunks: this.offer.totalChunks,
+      fileSize: this.offer.fileSize,
+      chunkSize: CHUNK_SIZE,
+      hasPartialData
+    }
+    channel.send(JSON.stringify(startMsg))
+
+    // Send resume info if needed
+    if (hasPartialData) {
+      const resumeMsg: ResumeMessage = {
+        type: 'resume',
+        receivedChunks: Array.from(this.partialState.receivedChunks)
+      }
+      channel.send(JSON.stringify(resumeMsg))
+    }
+  }
+
+  private async receiveChunks(channel: RTCDataChannel): Promise<Blob> {
+    return new Promise<Blob>((resolve, reject) => {
+      const periodicAck = this.setupPeriodicAck(channel)
+      const timeoutChecker = this.setupTimeoutChecker()
+      let isResolved = false
+
+      const resolveOnce = async (result: Blob | Error) => {
+        if (isResolved) return
+        isResolved = true
+
+        clearInterval(periodicAck)
+        clearInterval(timeoutChecker)
+
+        // Save pending chunks
+        if (this.pendingChunksBuffer.size > 0) {
+          await this.saveChunksBatch()
+          await this.saveDownloadState()
+        }
+
+        if (result instanceof Error) {
+          reject(result)
+        } else {
+          resolve(result)
+        }
+      }
+
+      const messageHandler = async (event: MessageEvent) => {
+        this.lastChunkReceiveTime = Date.now()
+
+        if (typeof event.data === 'string') {
+          await this.handleControlMessage(event.data, channel, resolveOnce)
+        } else if (event.data instanceof ArrayBuffer) {
+          await this.handleChunkData(event.data, channel)
+        }
+      }
+
+      const errorHandler = async () => {
+        await resolveOnce(new Error('Channel error'))
+      }
+
+      const closeHandler = async () => {
+        if (!this.isComplete()) {
+          await resolveOnce(new Error('Channel closed before completion'))
+        }
+      }
+
+      channel.addEventListener('message', messageHandler)
+      channel.addEventListener('error', errorHandler)
+      channel.addEventListener('close', closeHandler)
+
+      this.resources.add(() => {
+        channel.removeEventListener('message', messageHandler)
+        channel.removeEventListener('error', errorHandler)
+        channel.removeEventListener('close', closeHandler)
+      })
+    })
+  }
+
+  private setupPeriodicAck(channel: RTCDataChannel): number {
+    const interval = setInterval(() => {
+      if (this.state === 'completed' || channel.readyState !== 'open') return
+
+      if (Date.now() - this.lastChunkReceiveTime > 1000) {
+        this.sendAck(channel)
+      }
+    }, PERIODIC_ACK_INTERVAL)
+
+    this.resources.add(() => clearInterval(interval))
+    return interval
+  }
+
+  private setupTimeoutChecker(): number {
+    const interval = setInterval(() => {
+      if (this.state === 'completed') return
+
+      if (Date.now() - this.lastChunkReceiveTime > RECEIVE_TIMEOUT) {
+        console.error('[Receiver] Receive timeout')
+        this.abort()
+      }
+    }, 5000)
+
+    this.resources.add(() => clearInterval(interval))
+    return interval
+  }
+
+  private async handleControlMessage(
+    data: string,
+    channel: RTCDataChannel,
+    resolveOnce: (result: Blob | Error) => Promise<void>
+  ): Promise<void> {
+    try {
+      const msg = JSON.parse(data) as TransferMessage
+
+      if (msg.type === 'start') {
+        // Already handled in handshake
+      } else if (msg.type === 'request-ack') {
+        this.sendAck(channel)
+      } else if (msg.type === 'complete') {
+        await this.handleComplete(channel, resolveOnce)
+      } else if (msg.type === 'error') {
+        await resolveOnce(new Error(msg.message))
+      }
+    } catch (error) {
+      console.warn('[Receiver] Control message error:', error)
+    }
+  }
+
+  private async handleChunkData(buffer: ArrayBuffer, channel: RTCDataChannel): Promise<void> {
+    if (!this.partialState) return
+    if (buffer.byteLength < 5) return
+
+    // Extract index
+    const view = new DataView(buffer)
+    const chunkIndex = view.getUint32(0, true)
+
+    if (chunkIndex < 0 || chunkIndex >= this.offer.totalChunks) {
+      console.warn(`[Receiver] Invalid chunk index: ${chunkIndex}`)
+      return
+    }
+
+    // Check duplicate
+    const isDuplicate = this.partialState.receivedChunks.has(chunkIndex)
+
+    if (!isDuplicate) {
+      // Extract data
+      const chunkData = buffer.slice(4)
+
+      // Update state
+      this.partialState.receivedChunks.add(chunkIndex)
+      this.partialState.timestamp = Date.now()
+      this.pendingChunksBuffer.set(chunkIndex, chunkData)
+
+      // Periodic save
+      if (this.partialState.receivedChunks.size % DB_SAVE_META_INTERVAL === 0 && !this.isSaving) {
+        this.isSaving = true
+        this.saveDownloadState().finally(() => {
+          this.isSaving = false
+        })
+      }
+
+      // Batch save
+      if (this.pendingChunksBuffer.size >= DB_SAVE_CHUNK_INTERVAL && !this.isSaving) {
+        this.isSaving = true
+        const chunksToSave = new Map(this.pendingChunksBuffer)
+        this.pendingChunksBuffer.clear()
+
+        Promise.all([
+          this.saveChunksBatch(chunksToSave),
+          this.saveDownloadState()
+        ]).finally(() => {
+          this.isSaving = false
+        })
+      }
+    }
+
+    // Always send ACK
+    this.sendAck(channel)
+  }
+
+  private async handleComplete(
+    channel: RTCDataChannel,
+    resolveOnce: (result: Blob | Error) => Promise<void>
+  ): Promise<void> {
+    // Final save
+    if (this.pendingChunksBuffer.size > 0) {
+      await this.saveChunksBatch()
+      await this.saveDownloadState()
+    }
+
+    // Reload full state
+    const { loadDownloadState } = useFileTransferState()
+    const fullState = await loadDownloadState(this.offer.fileId)
+
+    if (!fullState) {
+      await resolveOnce(new Error('Failed to load state'))
+      return
+    }
+
+    // Find missing chunks
+    const missingChunks: number[] = []
+    for (let i = 0; i < this.offer.totalChunks; i++) {
+      if (!fullState.chunks.has(i)) {
+        missingChunks.push(i)
+        if (this.partialState) {
+          this.partialState.receivedChunks.delete(i)
+        }
+      }
+    }
+
+    // Request missing chunks
+    if (missingChunks.length > 0 && channel.readyState === 'open') {
+      console.log(`[Receiver] Requesting ${missingChunks.length} missing chunks`)
+      await this.saveDownloadState()
+
+      const reRequestMsg: ReRequestMessage = {
+        type: 'reRequest',
+        missingChunks
+      }
+      channel.send(JSON.stringify(reRequestMsg))
+      return
+    }
+
+    // Create blob
+    const chunks: ArrayBuffer[] = []
+    for (let i = 0; i < this.offer.totalChunks; i++) {
+      const chunk = fullState.chunks.get(i)
+      if (chunk) {
+        chunks.push(chunk)
+      }
+    }
+
+    const blob = new Blob(chunks)
+
+    // Cache and cleanup
+    await cacheFile(this.offer.fileId, blob)
+    const { deleteDownloadState } = useFileTransferState()
+    await deleteDownloadState(this.offer.fileId)
+
+    await resolveOnce(blob)
+  }
+
+  private sendAck(channel: RTCDataChannel): void {
+    if (!this.partialState || channel.readyState !== 'open') return
+
+    try {
+      let nextChunkIndex = 0
+      while (nextChunkIndex < this.offer.totalChunks && this.partialState.receivedChunks.has(nextChunkIndex)) {
+        nextChunkIndex++
+      }
+
+      const ackMsg: AckMessage = {
+        type: 'ack',
+        receivedCount: this.partialState.receivedChunks.size,
+        nextChunkIndex,
+        lastContinuousIndex: nextChunkIndex - 1
+      }
+
+      channel.send(JSON.stringify(ackMsg))
+    } catch (error) {
+      console.warn('[Receiver] ACK send failed:', error)
+    }
+  }
+
+  private isComplete(): boolean {
+    return this.partialState?.receivedChunks.size === this.offer.totalChunks
+  }
+
+  private async saveChunksBatch(chunks?: Map<number, ArrayBuffer>): Promise<void> {
+    const { saveChunksBatch } = useFileTransferState()
+    await saveChunksBatch(this.offer.fileId, chunks || this.pendingChunksBuffer)
+  }
+
+  private async saveDownloadState(): Promise<void> {
+    if (!this.partialState) return
+    const { saveDownloadState } = useFileTransferState()
+    await saveDownloadState(this.partialState)
+  }
+
+  getCurrentProgress(): { received: number; total: number } {
+    if (!this.partialState) return { received: 0, total: this.offer.fileSize }
+    const receivedBytes = Math.min(this.partialState.receivedChunks.size * CHUNK_SIZE, this.offer.fileSize)
+    return { received: receivedBytes, total: this.offer.fileSize }
+  }
 }
 
-type ReRequestMessage = {
-  type: 'reRequest'
-  missingChunks: number[]
-}
-
-type TransferMessage = StartMessage | CompleteMessage | ErrorMessage | AckMessage | ResumeMessage | RequestAckMessage | ReRequestMessage
-
-/**
- * 직접 P2P로 파일 전송
- */
+// ===== Main Composable =====
 export function useDirectFileTransfer(
   provider: WebrtcProvider,
   myUuid: string,
-  files: Map<string, FileMeta>,
+  files: Map<string, FileMeta>
 ) {
   const {
     createOffer,
@@ -80,7 +887,7 @@ export function useDirectFileTransfer(
     cleanup,
     cancelTransfer,
     getConnectionId,
-    activeChannels,
+    activeChannels
   } = useWebrtcConnection(provider, myUuid)
 
   const { startTransfer, updateProgress, completeTransfer, cancelTransfer: cancelProgress } =
@@ -88,58 +895,41 @@ export function useDirectFileTransfer(
 
   const { enqueue, registerDataChannel, unregisterDataChannel } = useGlobalDataChannelQueue()
 
-  // 전송/수신 중인 파일 추적 (중복 방지)
-  const activeTransfers = new Map<string, 'sending' | 'receiving'>()
+  const activeTransfers = new Map<string, FileSender | FileReceiver>()
 
-  /**
-   * 데이터 채널 생성 시 큐 매니저에 등록
-   * connectionId 형식: "fileId-peerId"
-   * fileId는 UUID이므로 하이픈이 여러 개 포함됨
-   * 마지막 "-user-"를 기준으로 peerUuid를 추출
-   */
+  // Register existing channels
   activeChannels.value.forEach((channel, connectionId) => {
     const userIndex = connectionId.lastIndexOf('-user-')
     if (userIndex !== -1) {
-      const peerId = connectionId.substring(userIndex + 1) // "-user-" 다음부터
+      const peerId = connectionId.substring(userIndex + 1)
       registerDataChannel(peerId, channel)
     }
   })
 
-  /**
-   * 파일 전송 (큐를 통한 전송 - 권장)
-   */
-  async function sendFileViaQueue(
-    fileId: string,
-    targetUuid: string,
-  ): Promise<void> {
+  async function sendFileViaQueue(fileId: string, targetUuid: string): Promise<void> {
     const transferKey = `${fileId}-${targetUuid}`
 
-    // 이미 전송 중이면 무시
     if (activeTransfers.has(transferKey)) {
-      const status = activeTransfers.get(transferKey)
-      console.warn(`[#15-guard] 이미 전송 중: ${fileId}, 상태: ${status}`)
-      console.warn(`[#15-guard] activeTransfers 내용:`, Array.from(activeTransfers.entries()))
+      console.warn('[Transfer] Already active:', transferKey)
       return
     }
 
-    // 캐시에서 파일 정보 로드 (Blob으로 유지 - 스트리밍)
     const cachedBlob = await getCachedFile(fileId)
     if (!cachedBlob) {
-      throw new Error('파일을 찾을 수 없습니다')
+      throw new Error('File not found')
     }
 
     const meta = files.get(fileId)
     const fileSize = cachedBlob.size
 
-    // 파일 크기에 따라 우선순위 결정
+    // Determine priority
     let priority = DataChannelPriority.NORMAL
     if (fileSize < 100 * 1024) {
-      priority = DataChannelPriority.HIGH // 100KB 미만: 높음
+      priority = DataChannelPriority.HIGH
     } else if (fileSize > 10 * 1024 * 1024) {
-      priority = DataChannelPriority.LOW // 10MB 초과: 낮음
+      priority = DataChannelPriority.LOW
     }
 
-    // 전송 작업 생성
     const job = createFileTransferJob(
       fileId,
       meta?.name || fileId,
@@ -147,24 +937,13 @@ export function useDirectFileTransfer(
       fileSize,
       priority,
       async (onProgress, checkCancelled) => {
-        // 실제 전송 로직 (Blob 전달)
-        await sendFileDirectInternal(
-          fileId,
-          targetUuid,
-          cachedBlob,
-          onProgress,
-          checkCancelled
-        )
+        await sendFileDirectInternal(fileId, targetUuid, cachedBlob, onProgress, checkCancelled)
       }
     )
 
-    // 큐에 등록
     enqueue(job)
   }
 
-  /**
-   * 내부 전송 함수 (큐 매니저가 호출) - Blob 스트리밍 방식
-   */
   async function sendFileDirectInternal(
     fileId: string,
     targetUuid: string,
@@ -174,1184 +953,142 @@ export function useDirectFileTransfer(
   ): Promise<void> {
     const connectionId = getConnectionId(fileId, targetUuid)
     const transferKey = `${fileId}-${targetUuid}`
+    const fileSize = fileBlob.size
+    const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
 
-    // 전송 중 표시
-    activeTransfers.set(transferKey, 'sending')
+    const sender = new FileSender(
+      fileId,
+      targetUuid,
+      fileBlob,
+      totalChunks,
+      fileSize,
+      transferKey,
+      onProgress,
+      checkCancelled
+    )
 
-    // 전체 전송 타임아웃 (5분)
-    const TOTAL_TRANSFER_TIMEOUT = 5 * 60 * 1000
-    let lastProgressTime = Date.now()
+    activeTransfers.set(transferKey, sender)
 
     try {
-      // 고정 청크 크기 사용
-      const fileSize = fileBlob.size
-      const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
-
-      const transferStartTime = performance.now()
-      console.log(`[#15] P2P 전송 시작 (큐 관리): ${totalChunks}개 청크 (${CHUNK_SIZE / 1024}KB 고정), ${(fileSize / 1024 / 1024).toFixed(2)}MB`)
-
-      // 진행 상태 초기화
       const meta = files.get(fileId)
       startTransfer(transferKey, meta?.name || fileId, 'upload', totalChunks, fileSize, false)
 
-      // Offer 생성 및 연결 (이어받기 정보는 Answer에서 전달됨)
-      console.log(`[#15] Offer 생성 시작: ${fileId} → ${targetUuid}`)
       const channel = await createOffer(fileId, targetUuid, totalChunks, fileSize)
-      console.log(`[#15] Offer 생성 완료, 채널 상태: ${channel.readyState}`)
 
-      // 에러 핸들러 등록 (버퍼 오버플로우 감지)
-      channel.onerror = (event) => {
-        console.error(`[#15] DataChannel 에러:`, event)
-        if (event instanceof RTCErrorEvent) {
-          console.error(`[#15] RTCErrorEvent - errorDetail: ${event.error?.errorDetail}, message: ${event.error?.message}`)
-        }
+      // Progress updater
+      const progressInterval = setInterval(() => {
+        const progress = sender.getCurrentProgress()
+        updateProgress(transferKey, Math.floor(progress.sent / CHUNK_SIZE), false, progress.sent)
+      }, 1000)
+
+      try {
+        await sender.send(channel)
+        completeTransfer(transferKey)
+        console.log('[Transfer] Send completed:', transferKey)
+      } finally {
+        clearInterval(progressInterval)
       }
 
-      // 채널 열릴 때까지 대기 (큰 파일은 더 오래 걸릴 수 있음)
-      if (channel.readyState !== 'open') {
-        console.log(`[#15] 채널 열림 대기 중... (현재 상태: ${channel.readyState})`)
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.error(`[#15] 채널 열림 타임아웃 (30초) - 상태: ${channel.readyState}`)
-            reject(new Error('채널 열림 타임아웃'))
-          }, 30000)
-
-          const openHandler = () => {
-            clearTimeout(timeout)
-            console.log(`[#15] 채널 열림 성공`)
+      // Wait for channel close
+      if (channel.readyState !== 'closed') {
+        await new Promise<void>(resolve => {
+          const closeHandler = () => {
+            channel.removeEventListener('close', closeHandler)
             resolve()
           }
-
-          const errorHandler = (error: Event) => {
-            clearTimeout(timeout)
-            console.error('[#15] 채널 열기 실패:', error)
-            if (error instanceof RTCErrorEvent) {
-              console.error(`[#15] 상세: ${error.error?.errorDetail}, ${error.error?.message}`)
-            }
-            reject(new Error('채널 에러'))
-          }
-          channel.addEventListener('open', openHandler, { once: true })
-          channel.addEventListener('error', errorHandler, { once: true })
+          channel.addEventListener('close', closeHandler)
+          setTimeout(resolve, 5000)
         })
       }
-
-      // 청크 전송 (이어받기: 수신자가 이미 받은 청크는 건너뜀)
-
-      // 이어받기 정보 수신
-      const receivedChunksSet = new Set<number>()
-      let skippedChunks = 0
-      let resumeInfoReceived = false
-      let receiverHasPartialData = false // 수신자가 이어받기 데이터를 가지고 있는지
-
-      // 전송 시작 메시지 전송
-      const startMsg: StartMessage = {
-        type: 'start',
-        totalChunks: totalChunks,
-        fileSize: fileSize,
-        chunkSize: CHUNK_SIZE
-      }
-      channel.send(JSON.stringify(startMsg))
-
-      // ACK 및 Resume 메시지 핸들러
-      // 순서 보장 안되므로 최대값만 추적 (더 최신 정보 우선)
-      let confirmedNextChunk = skippedChunks // 수신자가 다음에 받고 싶은 청크 인덱스
-
-      const messageHandler = (event: MessageEvent) => {
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data) as TransferMessage
-            if (msg.type === 'start') {
-              // 수신자의 start 응답 (이어받기 여부 포함)
-              receiverHasPartialData = msg.hasPartialData || false
-              console.log(`[#15-start] 수신자 응답: hasPartialData=${receiverHasPartialData}`)
-            } else if (msg.type === 'reRequest') {
-              // 수신자가 누락 청크 재요청
-              const reRequestMsg = msg as ReRequestMessage
-              const missingChunks = reRequestMsg.missingChunks
-              console.log(`[#15-reRequest] 재요청 수신: ${missingChunks.length}개 청크`)
-
-              // receivedChunksSet에서 제거 (재전송 대상으로 표시)
-              missingChunks.forEach(idx => receivedChunksSet.delete(idx))
-
-              // 백트래킹: 가장 작은 누락 청크부터 재전송
-              const minMissing = Math.min(...missingChunks)
-              if (currentChunkIndex > minMissing) {
-                console.log(`[#15-reRequest] 백트래킹: ${currentChunkIndex} → ${minMissing}`)
-                currentChunkIndex = minMissing
-              }
-            } else if (msg.type === 'ack') {
-              // ACK 순서 보장 안되므로 더 큰 값(최신 정보)만 반영
-              const wasUpdated = msg.nextChunkIndex > confirmedNextChunk
-              if (wasUpdated) {
-                confirmedNextChunk = msg.nextChunkIndex
-
-                // 백트래킹 시나리오: 수신자가 연속으로 받은 청크들을 receivedChunksSet에 반영
-                // (0부터 lastContinuousIndex까지는 확실히 받았음)
-                if (msg.lastContinuousIndex >= 0) {
-                  for (let idx = 0; idx <= msg.lastContinuousIndex; idx++) {
-                    if (!receivedChunksSet.has(idx)) {
-                      receivedChunksSet.add(idx)
-                      skippedChunks++
-                    }
-                  }
-                }
-              }
-              // 타임아웃 디버깅을 위해 모든 ACK 로깅 (업데이트 안된 경우도 표시)
-              console.log(`[#15-ack] ACK 수신${!wasUpdated ? '(무시)' : ''}: nextChunk=${msg.nextChunkIndex}, received=${msg.receivedCount}, continuous=${msg.lastContinuousIndex}, confirmed=${confirmedNextChunk}`)
-            } else if (msg.type === 'resume' && !resumeInfoReceived) {
-              msg.receivedChunks.forEach(idx => receivedChunksSet.add(idx))
-              skippedChunks = receivedChunksSet.size
-
-              // confirmedNextChunk: 0부터 연속으로 받은 다음 인덱스 계산
-              let nextChunk = 0
-              while (nextChunk < totalChunks && receivedChunksSet.has(nextChunk)) {
-                nextChunk++
-              }
-              confirmedNextChunk = nextChunk
-
-              resumeInfoReceived = true
-              console.log(`[#15-1] 이어받기: 총 ${skippedChunks}개 청크 보유, 연속=${confirmedNextChunk - 1}, 다음요청=${confirmedNextChunk}`)
-            }
-          } catch (error) {
-            console.warn('[#15] 메시지 파싱 실패:', error)
-          }
-        }
-      }
-      channel.addEventListener('message', messageHandler)
-
-      // Start 메시지 대기: 수신자가 준비될 때까지 대기 (필수!)
-      let startReceived = false
-      const startWaitStart = Date.now()
-      const START_WAIT_TIMEOUT = 5000
-      console.log(`[#15-handshake] 수신자 준비 대기 중 (start 메시지)...`)
-
-      while (!startReceived && Date.now() - startWaitStart < START_WAIT_TIMEOUT) {
-        // start 메시지 수신 여부 확인 (messageHandler에서 설정됨)
-        if (confirmedNextChunk >= 0) {
-          startReceived = true
-          break
-        }
-        await new Promise(resolve => setTimeout(resolve, 100))
-
-        // 채널 상태 확인
-        if (channel.readyState !== 'open') {
-          throw new Error(`대기 중 채널 닫힘 (상태: ${channel.readyState})`)
-        }
-      }
-
-      if (!startReceived) {
-        console.warn(`[#15-handshake] ⚠️ Start 메시지 타임아웃 (${Date.now() - startWaitStart}ms) - 강제 진행`)
-      } else {
-        console.log(`[#15-handshake] ✅ Start 메시지 수신 완료 (${Date.now() - startWaitStart}ms)`)
-      }
-
-      // Resume 정보 대기: 수신자가 이어받기 데이터가 있을 때만 추가 대기
-      if (receiverHasPartialData && !resumeInfoReceived) {
-        const resumeWaitStart = Date.now()
-        const RESUME_WAIT_TIMEOUT = 3000
-        console.log(`[#15-resume] 이어받기 정보 대기 중...`)
-        while (!resumeInfoReceived && Date.now() - resumeWaitStart < RESUME_WAIT_TIMEOUT) {
-          await new Promise(resolve => setTimeout(resolve, 50))
-        }
-
-        if (resumeInfoReceived) {
-          console.log(`[#15-resume] Resume 정보 수신 완료 (${Date.now() - resumeWaitStart}ms) - 스킵=${skippedChunks}`)
-        } else {
-          console.warn(`[#15-resume] Resume 정보 타임아웃 - 처음부터 전송`)
-        }
-      }
-
-      // 이어받기: 첫 번째 미수신 청크부터 시작
-      let currentChunkIndex = 0 // 청크 인덱스는 별도 추적
-      if (receivedChunksSet.size > 0) {
-        // 첫 번째 미수신 청크 찾기
-        while (currentChunkIndex < totalChunks && receivedChunksSet.has(currentChunkIndex)) {
-          currentChunkIndex++
-        }
-        console.log(`[#16-resume] 이어받기 시작: 청크 ${currentChunkIndex}부터 (offset=${(currentChunkIndex * CHUNK_SIZE / 1024 / 1024).toFixed(2)}MB)`)
-      }
-
-      // 주기적인 ACK 요청 (10초마다) - 느린 네트워크에서 트래픽 감소
-      let lastAckRequestTime = Date.now()
-      const ACK_REQUEST_INTERVAL = 10000
-      let actualSentChunks = 0 // 실제로 전송한 청크 수 (스킵 제외)
-
-      try {
-        while (currentChunkIndex < totalChunks) {
-          const chunkIndex = currentChunkIndex
-
-          // 취소 확인
-          if (checkCancelled && checkCancelled()) {
-            throw new Error('전송 취소됨')
-          }
-
-          // 전체 전송 타임아웃 체크 (진행이 없을 경우)
-          const now = Date.now()
-          if (now - lastProgressTime > TOTAL_TRANSFER_TIMEOUT) {
-            throw new Error(`전송 타임아웃: ${(now - lastProgressTime) / 1000}초 동안 진행 없음`)
-          }
-
-          // 주기적 ACK 요청
-          if (now - lastAckRequestTime > ACK_REQUEST_INTERVAL) {
-            try {
-              const requestMsg: RequestAckMessage = { type: 'request-ack' }
-              channel.send(JSON.stringify(requestMsg))
-              console.log(`[#16-ack] ACK 요청 전송 (chunk=${chunkIndex}, sent=${actualSentChunks}, skipped=${skippedChunks})`)
-              lastAckRequestTime = now
-            } catch (error) {
-              console.warn('[#16-ack] ACK 요청 전송 실패:', error)
-            }
-          }
-
-          // 이미 받은 청크는 건너뜀
-          if (receivedChunksSet.has(chunkIndex)) {
-            currentChunkIndex++ // 다음 청크로 이동
-            lastProgressTime = Date.now() // 진행 시간 업데이트
-
-            // 진행률 반영
-            const shouldUpdate = (chunkIndex + 1) % 100 === 0 || chunkIndex === totalChunks - 1
-            updateProgress(transferKey, chunkIndex + 1, shouldUpdate)
-            if (onProgress) {
-              onProgress(currentChunkIndex * CHUNK_SIZE, fileSize)
-            }
-            continue
-          }
-
-          // 실제 전송 카운트 증가
-          actualSentChunks++
-
-          // Flow control 1: ACK 기반 백프레셔 (수신자 실제 처리 상태 확인)
-          // 수신자가 원하는 다음 청크보다 ACK_WINDOW개 이상 앞서 나가면 대기
-          const gap = chunkIndex - confirmedNextChunk // 현재 전송하려는 청크 - 수신자가 받고 싶은 다음 청크
-
-          if (gap >= ACK_WINDOW) {
-            const waitStart = Date.now()
-            const oldConfirmed = confirmedNextChunk
-            let lastAckRequestInWait = Date.now()
-            console.log(`[#16-ack] 백프레셔 대기 시작: 전송할청크=${chunkIndex}, 수신자요청=${confirmedNextChunk}, 차이=${gap}`)
-
-            // 차이가 ACK_WINDOW 미만이 될 때까지 대기
-            let waitCount = 0
-            let timeoutOccurred = false
-            while (chunkIndex - confirmedNextChunk >= ACK_WINDOW) {
-              await new Promise((resolve) => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-              waitCount++
-
-              // 대기 중 주기적으로 ACK 재요청 (1초마다)
-              if (Date.now() - lastAckRequestInWait > ACK_REQUEST_INTERVAL_IN_WAIT) {
-                try {
-                  const requestMsg: RequestAckMessage = { type: 'request-ack' }
-                  channel.send(JSON.stringify(requestMsg))
-                  console.log(`[#16-ack] 대기 중 ACK 재요청 (${Date.now() - waitStart}ms)`)
-                  lastAckRequestInWait = Date.now()
-                } catch (error) {
-                  console.warn('[#16-ack] ACK 재요청 실패:', error)
-                }
-              }
-
-              // 1초마다 상태 로깅
-              if (waitCount % 10 === 0) {
-                console.log(`[#16-ack] 대기 중... (${Date.now() - waitStart}ms) confirmed=${confirmedNextChunk}`)
-              }
-
-              // ACK 타임아웃 - 수신자 상태 재측정 및 백트래킹
-              if (Date.now() - waitStart > ACK_TIMEOUT) {
-                console.warn(`[#16-ack] ⚠️ ACK 대기 타임아웃! 수신자 상태 재측정 시작 (전송=${chunkIndex}, 이전요청=${confirmedNextChunk})`)
-
-                // 즉시 ACK 요청하여 수신자 실제 상태 확인
-                try {
-                  const requestMsg: RequestAckMessage = { type: 'request-ack' }
-                  channel.send(JSON.stringify(requestMsg))
-                  console.log(`[#16-backtrack] 백트래킹용 ACK 요청 전송`)
-                } catch (error) {
-                  console.warn('[#16-backtrack] ACK 요청 실패:', error)
-                }
-
-                // ACK 응답 대기 (최대 2초)
-                const ackWaitStart = Date.now()
-                const oldConfirmedBeforeWait = confirmedNextChunk
-                while (confirmedNextChunk === oldConfirmedBeforeWait && Date.now() - ackWaitStart < 2000) {
-                  await new Promise(resolve => setTimeout(resolve, 100))
-                }
-
-                if (confirmedNextChunk > oldConfirmedBeforeWait) {
-                  // ACK 받음 - 수신자가 실제로 받은 위치로 백트래킹
-                  console.warn(`[#16-backtrack] ✅ ACK 수신: 수신자는 ${confirmedNextChunk}까지 받음 - 백트래킹 시작`)
-
-                  // 현재 위치가 수신자가 받은 위치보다 앞서있으면 백트래킹
-                  if (chunkIndex > confirmedNextChunk) {
-                    const backtrackTo = confirmedNextChunk
-                    console.warn(`[#16-backtrack] 백트래킹: ${chunkIndex} → ${backtrackTo} (${chunkIndex - backtrackTo}개 청크 되돌림)`)
-                    currentChunkIndex = backtrackTo // 청크 인덱스 조정
-                    timeoutOccurred = true
-                    break
-                  } else {
-                    console.log(`[#16-backtrack] 백트래킹 불필요 - 현재 위치=${chunkIndex}, 수신자=${confirmedNextChunk}`)
-                    timeoutOccurred = true
-                    break
-                  }
-                } else {
-                  // ACK 못받음 - 수신자가 요청하는 위치로 백트래킹 (청크 유실 가능성)
-                  console.warn(`[#16-backtrack] ⚠️ ACK 응답 없음 - 수신자 요청 위치로 백트래킹`)
-                  const backtrackTo = confirmedNextChunk
-                  console.warn(`[#16-backtrack] 백트래킹: ${chunkIndex} → ${backtrackTo} (청크 재전송)`)
-                  currentChunkIndex = backtrackTo // 청크 인덱스 조정
-                  timeoutOccurred = true
-                  break
-                }
-              }
-
-              // 취소 확인
-              if (checkCancelled && checkCancelled()) {
-                throw new Error('전송 취소됨')
-              }
-            }
-
-            const waitTime = Date.now() - waitStart
-            if (timeoutOccurred) {
-              if (currentChunkIndex < oldConfirmed) {
-                // 백트래킹 발생
-                console.log(`[#16-ack] 타임아웃 후 백트래킹 (${waitTime}ms) - 전송 위치 조정 (${currentChunkIndex + 1} ← ${oldConfirmed + 1})`)
-              } else {
-                // 윈도우만 리셋
-                console.log(`[#16-ack] 타임아웃 후 복구 (${waitTime}ms) - 윈도우 리셋 (confirmed: ${oldConfirmed} → ${confirmedNextChunk})`)
-              }
-            } else {
-              console.log(`[#16-ack] 수신 확인 완료 (${waitTime}ms) - 계속 전송 (요청=${confirmedNextChunk})`)
-            }
-          }
-
-          // Flow control 2: bufferedAmount 기반 (로컬 버퍼 관리)
-          if (channel.bufferedAmount > MAX_BUFFER_SIZE) {
-            const waitStart = Date.now()
-            const initialBuffered = channel.bufferedAmount
-            console.log(`[#16-buf] 버퍼 대기: ${(initialBuffered / 1024 / 1024).toFixed(2)}MB / ${(MAX_BUFFER_SIZE / 1024 / 1024).toFixed(2)}MB`)
-
-            while (channel.bufferedAmount > BUFFER_LOW_WATERMARK) {
-              await new Promise((resolve) => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-
-              // 타임아웃 체크
-              if (Date.now() - waitStart > BUFFER_WAIT_TIMEOUT) {
-                console.warn(`[#16-buf] 버퍼 대기 타임아웃 - 계속 전송 (buffered: ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB)`)
-                break
-              }
-
-              // 취소 확인
-              if (checkCancelled && checkCancelled()) {
-                throw new Error('전송 취소됨')
-              }
-            }
-
-            const waitTime = Date.now() - waitStart
-            const drainedAmount = initialBuffered - channel.bufferedAmount
-            console.log(`[#16-buf] 버퍼 정리 완료: ${waitTime}ms, ${(drainedAmount / 1024 / 1024).toFixed(2)}MB 전송됨, 현재: ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB`)
-          }
-
-          // 청크 인덱스 기반으로 청크 생성 (Blob 슬라이싱 - 스트리밍)
-          const chunkStart = currentChunkIndex * CHUNK_SIZE
-          const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, fileSize)
-          const chunkBlob = fileBlob.slice(chunkStart, chunkEnd)
-          const chunkData = await chunkBlob.arrayBuffer() // 필요한 부분만 메모리에 로드
-          const actualChunkSize = chunkData.byteLength
-
-          // 청크 인덱스(4바이트) + 데이터를 하나의 버퍼로 결합 (순서 보장)
-          const combinedBuffer = new ArrayBuffer(4 + actualChunkSize)
-          const view = new DataView(combinedBuffer)
-          view.setUint32(0, chunkIndex, true) // 리틀 엔디안으로 인덱스 저장
-          new Uint8Array(combinedBuffer, 4).set(new Uint8Array(chunkData))
-
-          // send() 전 버퍼 체크 - 128KB 넘으면 대기 (느린 네트워크에서 더 보수적)
-          while (channel.bufferedAmount > 128 * 1024) {
-            if (channel.readyState !== 'open') {
-              throw new Error(`대기 중 채널 닫힘 (상태: ${channel.readyState})`)
-            }
-            await new Promise(resolve => setTimeout(resolve, 20))
-          }
-
-          // 결합된 버퍼 전송
-          try {
-            if (channel.readyState !== 'open') {
-              throw new Error(`채널이 닫혔습니다 (상태: ${channel.readyState})`)
-            }
-
-            channel.send(combinedBuffer)
-            actualSentChunks++
-
-            if (actualSentChunks <= 10) {
-              console.log(`[#16-send] 청크 ${chunkIndex} 전송, bufferedAmount=${(channel.bufferedAmount / 1024).toFixed(1)}KB`)
-            }
-          } catch (error) {
-            console.error(`[#16] 청크 전송 실패 (index: ${chunkIndex}):`, error)
-            throw error
-          }
-
-          // 청크 인덱스 증가
-          currentChunkIndex++ // 다음 청크로 이동
-
-          // Flow control 3: 매 청크마다 버퍼 체크 (오버플로우 방지)
-          const BUFFER_CRITICAL = 256 * 1024 // 256KB - 느린 네트워크에서 더 보수적
-
-          if (channel.bufferedAmount > BUFFER_CRITICAL) {
-            const postSendWaitStart = Date.now()
-            let logCount = 0
-            console.log(`[#16-buf-post] 버퍼 대기 시작 (청크 ${chunkIndex} 후): ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB`)
-
-            while (channel.bufferedAmount > BUFFER_LOW_WATERMARK) {
-              // 채널 상태 확인
-              if (channel.readyState !== 'open') {
-                throw new Error(`대기 중 채널 닫힘 (상태: ${channel.readyState})`)
-              }
-
-              await new Promise((resolve) => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-              logCount++
-
-              // 1초마다 로깅
-              if (logCount % 10 === 0) {
-                console.log(`[#16-buf-post] 버퍼 대기 중... ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB, ${Date.now() - postSendWaitStart}ms`)
-              }
-
-              // 타임아웃 (30초)
-              if (Date.now() - postSendWaitStart > 30000) {
-                console.warn(`[#16-buf-post] 버퍼 타임아웃 - 계속 진행 (buffered: ${(channel.bufferedAmount / 1024 / 1024).toFixed(2)}MB)`)
-                break
-              }
-
-              // 취소 확인
-              if (checkCancelled && checkCancelled()) {
-                throw new Error('전송 취소됨')
-              }
-            }
-
-            console.log(`[#16-buf-post] 버퍼 대기 완료: ${Date.now() - postSendWaitStart}ms, 남은 버퍼=${(channel.bufferedAmount / 1024).toFixed(1)}KB`)
-          }
-
-          // UI 업데이트 최적화: 100청크마다만 업데이트
-          const shouldUpdate = (chunkIndex + 1) % 100 === 0 || chunkIndex === totalChunks - 1
-          const sentBytes = Math.min(currentChunkIndex * CHUNK_SIZE, fileSize)
-          updateProgress(transferKey, chunkIndex + 1, shouldUpdate, sentBytes)
-          lastProgressTime = Date.now() // 청크 전송 완료 시 진행 시간 업데이트
-
-          // 진행 상황 콜백
-          if (onProgress) {
-            onProgress(sentBytes, fileSize)
-          }
-
-          // 로그 최적화: 100청크마다만 출력
-          if (shouldUpdate) {
-            console.log(`[#16] P2P 전송: ${chunkIndex + 1}/${totalChunks} (${(((chunkIndex + 1) / totalChunks) * 100).toFixed(0)}%), buffered: ${(channel.bufferedAmount / 1024).toFixed(0)}KB`)
-          }
-        }
-
-        // 기본 메시지 핸들러 제거 (재전송 루프에서 새 핸들러 등록)
-        channel.removeEventListener('message', messageHandler)
-      } catch (error) {
-        console.error(`[#16] 전송 루프 에러:`, error)
-        throw error
-      }
-
-      // 재전송 루프 (reRequest 처리용) - complete 전송 후에도 재전송 가능
-      let reRequestReceived = false
-      let reRequestChunks: number[] = []
-
-      // reRequest 핸들러 추가 (기존 핸들러는 제거됨)
-      const reRequestHandler = (event: MessageEvent) => {
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data) as TransferMessage
-            if (msg.type === 'reRequest') {
-              const reRequestMsg = msg as ReRequestMessage
-              reRequestChunks = reRequestMsg.missingChunks
-              reRequestReceived = true
-              console.log(`[#16-reRequest-post] complete 후 재요청 수신: ${reRequestChunks.length}개 청크`)
-            }
-          } catch (error) {
-            console.warn('[#16-reRequest-post] 메시지 파싱 실패:', error)
-          }
-        }
-      }
-      channel.addEventListener('message', reRequestHandler)
-
-      try {
-        // 재전송 루프 - 최대 3번까지 재시도
-        let retryCount = 0
-        const MAX_RETRIES = 3
-
-        while (retryCount < MAX_RETRIES) {
-          // 완료 메시지 전송 전 버퍼 비우기
-          while (channel.bufferedAmount > 0) {
-            await new Promise((resolve) => setTimeout(resolve, 100))
-          }
-
-          const completeMsg: CompleteMessage = { type: 'complete' }
-          channel.send(JSON.stringify(completeMsg))
-
-          if (retryCount === 0) {
-            if (actualSentChunks > 0) {
-              console.log(`[#16] 완료 메시지 전송 (실제전송=${actualSentChunks}, 스킵=${skippedChunks}, 전체=${totalChunks})`)
-            } else {
-              console.log(`[#16] ⚠️ 전송할 청크 없음 - 수신자가 이미 모두 보유 (스킵=${skippedChunks}, 전체=${totalChunks})`)
-            }
-          } else {
-            console.log(`[#16-retry] 재전송 후 완료 메시지 전송 (시도 ${retryCount}/${MAX_RETRIES})`)
-          }
-
-          // reRequest 대기 (3초)
-          reRequestReceived = false
-          reRequestChunks = []
-          const waitStart = Date.now()
-          const REREQUEST_WAIT_TIMEOUT = 3000
-
-          while (!reRequestReceived && Date.now() - waitStart < REREQUEST_WAIT_TIMEOUT) {
-            await new Promise(resolve => setTimeout(resolve, 100))
-
-            // 채널이 닫혔으면 종료
-            if (channel.readyState !== 'open') {
-              console.log(`[#16-retry] 채널 닫힘 - 정상 종료`)
-              break
-            }
-          }
-
-          // reRequest가 없으면 정상 완료
-          if (!reRequestReceived || reRequestChunks.length === 0) {
-            console.log(`[#16-complete] 재요청 없음 - 전송 완료 확정`)
-            break
-          }
-
-          // reRequest 처리 - 누락 청크 재전송
-          console.log(`[#16-retry] 재전송 시작: ${reRequestChunks.length}개 청크 (시도 ${retryCount + 1}/${MAX_RETRIES})`)
-
-          for (const chunkIndex of reRequestChunks) {
-            // 취소 확인
-            if (checkCancelled && checkCancelled()) {
-              throw new Error('전송 취소됨')
-            }
-
-            // 채널 상태 확인
-            if (channel.readyState !== 'open') {
-              throw new Error(`재전송 중 채널 닫힘 (상태: ${channel.readyState})`)
-            }
-
-            // 청크 생성
-            const chunkStart = chunkIndex * CHUNK_SIZE
-            const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, fileSize)
-            const chunkBlob = fileBlob.slice(chunkStart, chunkEnd)
-            const chunkData = await chunkBlob.arrayBuffer()
-            const actualChunkSize = chunkData.byteLength
-
-            // 청크 인덱스(4바이트) + 데이터를 하나의 버퍼로 결합
-            const combinedBuffer = new ArrayBuffer(4 + actualChunkSize)
-            const view = new DataView(combinedBuffer)
-            view.setUint32(0, chunkIndex, true)
-            new Uint8Array(combinedBuffer, 4).set(new Uint8Array(chunkData))
-
-            // send() 전 버퍼 체크 - 128KB 넘으면 대기 (느린 네트워크 고려)
-            while (channel.bufferedAmount > 128 * 1024) {
-              if (channel.readyState !== 'open') {
-                throw new Error(`버퍼 대기 중 채널 닫힘`)
-              }
-              await new Promise(resolve => setTimeout(resolve, 20))
-            }
-
-            channel.send(combinedBuffer)
-            console.log(`[#16-retry] 청크 ${chunkIndex} 재전송`)
-          }
-
-          retryCount++
-        }
-
-        if (retryCount >= MAX_RETRIES) {
-          console.warn(`[#16-retry] 최대 재시도 횟수 초과 - 강제 완료`)
-        }
-      } finally {
-        channel.removeEventListener('message', reRequestHandler)
-      }
-
-      const transferElapsed = performance.now() - transferStartTime
-      const speedMBps = (fileSize / 1024 / 1024) / (transferElapsed / 1000)
-
-      if (skippedChunks > 0) {
-        console.log(`[#17] P2P 전송 완료 (이어받기: ${skippedChunks}개 건너뜀) - ${transferElapsed.toFixed(0)}ms, ${speedMBps.toFixed(2)} MB/s`)
-      } else {
-        console.log(`[#17] P2P 전송 완료 - ${transferElapsed.toFixed(0)}ms, ${speedMBps.toFixed(2)} MB/s`)
-      }
-      completeTransfer(transferKey)
-
-      // 채널 정리
-      await new Promise<void>((resolve) => {
-        if (channel.readyState === 'closed') {
-          resolve()
-          return
-        }
-
-        const closeHandler = () => {
-          channel.removeEventListener('close', closeHandler)
-          resolve()
-        }
-
-        channel.addEventListener('close', closeHandler)
-        setTimeout(() => {
-          channel.removeEventListener('close', closeHandler)
-          resolve()
-        }, 5000)
-      })
 
       unregisterDataChannel(targetUuid)
       cleanup(connectionId)
     } catch (error) {
-      console.error(`[P2P] 전송 실패 (${transferKey}):`, error)
-      console.error(`[P2P] 에러 스택:`, error instanceof Error ? error.stack : '스택 없음')
+      console.error('[Transfer] Send failed:', error)
       cancelProgress(transferKey)
-      console.log(`[#15] unregisterDataChannel 호출: ${targetUuid}`)
       unregisterDataChannel(targetUuid)
-      cancelTransfer(fileId, targetUuid, error instanceof Error ? error.message : '알 수 없는 오류')
+      cancelTransfer(fileId, targetUuid, error instanceof Error ? error.message : 'Unknown error')
       throw error
     } finally {
-      // 전송 완료 또는 실패 시 상태 제거
       activeTransfers.delete(transferKey)
-      console.log(`[#17-cleanup] 전송 상태 제거: ${transferKey}`)
     }
   }
 
-  /**
-   * 파일 수신 (수신자)
-   */
   async function receiveFileDirect(offer: FileTransferOffer): Promise<Blob> {
     const connectionId = getConnectionId(offer.fileId, offer.senderUuid)
-    const transferKey = offer.fileId // 수신자는 fileId만 사용
+    const transferKey = offer.fileId
 
-    // 이미 수신 중이면 무시 (중복 Offer 방지)
     if (activeTransfers.has(transferKey)) {
-      console.log(`[#18-guard] 이미 수신 중: ${offer.fileId}`)
-      throw new Error('이미 수신 중입니다')
+      throw new Error('Already receiving')
     }
 
-    // 수신 중 표시
-    activeTransfers.set(transferKey, 'receiving')
+    const receiver = new FileReceiver(offer, transferKey)
+    activeTransfers.set(transferKey, receiver)
 
     try {
-      const receiveStartTime = performance.now()
-      console.log(`[#18] P2P 수신 시작: ${offer.totalChunks}개 청크, ${(offer.fileSize / 1024 / 1024).toFixed(2)}MB`)
-
-      // 이어받기: 기존 다운로드 상태 확인
-      const { loadDownloadState, saveDownloadState, deleteDownloadState, isComplete: isDownloadComplete } =
-        useFileTransferState()
-
-      console.log(`[#18-resume] fileId로 이어받기 상태 조회: ${offer.fileId}`)
-      let partialState = await loadDownloadState(offer.fileId)
-
-      // 진행 상태 초기화
       const meta = files.get(offer.fileId)
 
-      if (partialState) {
-        console.log(`[#18-1] ✅ 이어받기 가능: ${partialState.receivedChunks.size}/${offer.totalChunks} 청크 보유 (fileId: ${offer.fileId})`)
+      // Check if already complete
+      const { loadDownloadState, isComplete, deleteDownloadState } = useFileTransferState()
+      const partialState = await loadDownloadState(offer.fileId)
 
-        // 이미 완료된 파일인지 확인 (메타데이터 + 실제 청크 데이터)
-        if (isDownloadComplete(partialState)) {
-          console.log(`[#18-complete] 메타데이터 완료 - 실제 청크 데이터 확인 중...`)
+      if (partialState && isComplete(partialState)) {
+        console.log('[Transfer] Already completed, loading from cache')
 
-          // 실제 청크 데이터가 모두 있는지 확인
-          const chunks: ArrayBuffer[] = []
-          let hasAllChunks = true
-          for (let i = 0; i < offer.totalChunks; i++) {
-            const chunk = partialState.chunks.get(i)
-            if (!chunk) {
-              console.warn(`[#18-complete] 청크 ${i} 데이터 누락 - 메타데이터만 있고 실제 데이터 없음`)
-              hasAllChunks = false
-              // receivedChunks에서 제거 (메타데이터 수정)
-              partialState.receivedChunks.delete(i)
-            } else {
-              chunks.push(chunk)
-            }
-          }
+        const chunks: ArrayBuffer[] = []
+        let hasAllChunks = true
 
-          if (hasAllChunks && chunks.length === offer.totalChunks) {
-            console.log(`[#18-complete] 🎉 모든 청크 데이터 확인 - 채널 생성 없이 바로 반환`)
-            const blob = new Blob(chunks, { type: meta?.type || 'application/octet-stream' })
-            await cacheFile(offer.fileId, blob)
-            await deleteDownloadState(offer.fileId)
-            activeTransfers.delete(transferKey)
-            console.log(`[#18-complete] 이미 완료된 파일 반환 완료 - 채널 생성 스킵`)
-            return blob
+        for (let i = 0; i < offer.totalChunks; i++) {
+          const chunk = partialState.chunks.get(i)
+          if (!chunk) {
+            hasAllChunks = false
+            partialState.receivedChunks.delete(i)
           } else {
-            console.warn(`[#18-complete] 실제 청크: ${chunks.length}/${offer.totalChunks} - 메타데이터 수정 후 이어받기`)
-            // 메타데이터 업데이트 (누락된 청크 제외)
-            await saveDownloadState(partialState)
+            chunks.push(chunk)
           }
         }
 
-        startTransfer(transferKey, meta?.name || offer.fileId, 'download', offer.totalChunks, offer.fileSize, true)
-        // 실제 받은 바이트 계산 (각 청크의 실제 크기 합산, 단 totalBytes를 초과하지 않음)
-        let receivedBytes = 0
-        for (const chunk of partialState.chunks.values()) {
-          receivedBytes += chunk.byteLength
-        }
-        // totalBytes를 초과하지 않도록 상한 제한 (마지막 청크 크기 오차 방지)
-        receivedBytes = Math.min(receivedBytes, offer.fileSize)
-        updateProgress(transferKey, partialState.receivedChunks.size, false, receivedBytes)
-      } else {
-        console.log(`[#18-1] ℹ️ 처음 받는 파일 (fileId: ${offer.fileId})`)
-        startTransfer(transferKey, meta?.name || offer.fileId, 'download', offer.totalChunks, offer.fileSize)
-
-        // 새로운 다운로드 상태 생성
-        partialState = {
-          fileId: offer.fileId,
-          fileName: meta?.name || offer.fileId,
-          totalChunks: offer.totalChunks,
-          chunkSize: CHUNK_SIZE, // 고정 64KB
-          totalBytes: offer.fileSize,
-          receivedChunks: new Set(),
-          chunks: new Map(),
-          timestamp: Date.now(),
-          transferKey: `direct-${offer.fileId}-${Date.now()}`,
+        if (hasAllChunks) {
+          const blob = new Blob(chunks, { type: meta?.type || 'application/octet-stream' })
+          await cacheFile(offer.fileId, blob)
+          await deleteDownloadState(offer.fileId)
+          activeTransfers.delete(transferKey)
+          return blob
         }
       }
 
-      // Answer 생성 및 연결
+      startTransfer(transferKey, meta?.name || offer.fileId, 'download', offer.totalChunks, offer.fileSize, !!partialState)
+
       const channel = await createAnswer(offer)
 
-      // 채널이 열리면 시작 메시지 + 이어받기 정보 전송
-      const hasPartialData = partialState!.receivedChunks.size > 0
-      const sendStartAndResumeInfo = () => {
-        // 먼저 start 메시지 전송 (이어받기 여부 포함)
-        const startResponseMsg: StartMessage = {
-          type: 'start',
-          totalChunks: offer.totalChunks,
-          fileSize: offer.fileSize,
-          chunkSize: partialState!.chunkSize, // 현재 상태의 청크 크기
-          hasPartialData: hasPartialData
-        }
-        channel.send(JSON.stringify(startResponseMsg))
-        console.log(`[#18-2] start 응답 전송 (hasPartialData=${hasPartialData})`)
+      // Progress updater
+      const progressInterval = setInterval(() => {
+        const progress = receiver.getCurrentProgress()
+        const chunkCount = Math.floor(progress.received / CHUNK_SIZE)
+        updateProgress(transferKey, chunkCount, false, progress.received)
+      }, 1000)
 
-        // 이어받기 정보가 있으면 resume 메시지 전송
-        if (hasPartialData) {
-          const resumeMsg: ResumeMessage = {
-            type: 'resume',
-            receivedChunks: Array.from(partialState!.receivedChunks)
-          }
-          channel.send(JSON.stringify(resumeMsg))
-          console.log(`[#18-2] 이어받기 정보 전송: ${partialState!.receivedChunks.size}개 청크`)
-        }
+      try {
+        const blob = await receiver.receive(channel)
+        completeTransfer(transferKey)
+        console.log('[Transfer] Receive completed:', transferKey)
+        return blob
+      } finally {
+        clearInterval(progressInterval)
       }
-
-      // 채널 열릴 때까지 대기
-      if (channel.readyState !== 'open') {
-        console.log(`[#18] 채널 열림 대기 중... (현재 상태: ${channel.readyState})`)
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.error(`[#18] 채널 열림 타임아웃 (30초) - 상태: ${channel.readyState}`)
-            reject(new Error('채널 열림 타임아웃'))
-          }, 30000)
-
-          const openHandler = () => {
-            clearTimeout(timeout)
-            console.log(`[#18] 채널 열림 성공`)
-            sendStartAndResumeInfo() // 채널 열리면 시작+이어받기 정보 전송
-            resolve()
-          }
-          const errorHandler = (error: Event) => {
-            clearTimeout(timeout)
-            console.error('[#18] 채널 열기 실패:', error)
-            if (error instanceof RTCErrorEvent) {
-              console.error(`[#18] 상세: ${error.error?.errorDetail}, ${error.error?.message}`)
-            }
-            reject(new Error(`채널 에러: ${error instanceof RTCErrorEvent ? error.error?.message : '알 수 없음'}`))
-          }
-          channel.addEventListener('open', openHandler, { once: true })
-          channel.addEventListener('error', errorHandler, { once: true })
-        })
-      } else {
-        sendStartAndResumeInfo() // 이미 열려있으면 즉시 전송
-      }
-
-      // 청크 수신 (메모리 효율 - 즉시 DB 저장)
-      return new Promise<Blob>(async (resolve, reject) => {
-        let pendingSaveChunks = 0 // 저장되지 않은 청크 수
-        const pendingChunksBuffer = new Map<number, ArrayBuffer>() // 배치 저장용 버퍼
-        let isSaving = false // DB 저장 중 플래그
-        let lastChunkReceiveTime = Date.now() // 마지막 청크 수신 시간
-        let isResolved = false // Promise 해결 여부
-
-        // 주기적 ACK 전송 (4초마다) - ACK 유실 대비, 느린 네트워크에서 트래픽 감소
-        const PERIODIC_ACK_INTERVAL = 4000
-        const periodicAckSender = setInterval(() => {
-          if (isResolved || channel.readyState !== 'open') {
-            clearInterval(periodicAckSender)
-            return
-          }
-
-          // 마지막 청크 수신 후 1초 이상 지났으면 주기적 ACK 전송
-          if (Date.now() - lastChunkReceiveTime > 1000) {
-            try {
-              let nextChunkIndex = 0
-              while (nextChunkIndex < offer.totalChunks && partialState!.receivedChunks.has(nextChunkIndex)) {
-                nextChunkIndex++
-              }
-              const lastContinuousIndex = nextChunkIndex - 1
-
-              const ackMsg: AckMessage = {
-                type: 'ack',
-                receivedCount: partialState!.receivedChunks.size,
-                nextChunkIndex: nextChunkIndex,
-                lastContinuousIndex: lastContinuousIndex
-              }
-              channel.send(JSON.stringify(ackMsg))
-              console.log(`[#20-periodic-ack] 주기적 ACK 전송: received=${partialState!.receivedChunks.size}, next=${nextChunkIndex}`)
-            } catch (error) {
-              console.warn('[#20-periodic-ack] 주기적 ACK 전송 실패:', error)
-            }
-          }
-        }, PERIODIC_ACK_INTERVAL)
-
-        // 타임아웃 체크 (30초간 청크 수신 없으면 실패)
-        const RECEIVE_TIMEOUT = 30000
-        const timeoutChecker = setInterval(async () => {
-          if (isResolved) {
-            clearInterval(timeoutChecker)
-            clearInterval(periodicAckSender)
-            return
-          }
-
-          const elapsed = Date.now() - lastChunkReceiveTime
-          if (elapsed > RECEIVE_TIMEOUT) {
-            clearInterval(timeoutChecker)
-            clearInterval(periodicAckSender)
-            isResolved = true
-
-            console.error(`[#19-timeout] 수신 타임아웃: ${elapsed}ms 동안 청크 수신 없음 (${partialState!.receivedChunks.size}/${offer.totalChunks})`)
-
-            // 상태 저장 (이어받기 가능하도록)
-            if (pendingChunksBuffer.size > 0) {
-              await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-            }
-            await saveDownloadState(partialState!)
-
-            // 정리
-            cleanup(connectionId)
-            activeTransfers.delete(transferKey)
-            cancelProgress(transferKey)
-
-            reject(new Error(`수신 타임아웃 (${partialState!.receivedChunks.size}/${offer.totalChunks} 청크)`))
-          }
-        }, 5000) // 5초마다 체크
-
-        // 메모리에 청크 배열 생성하지 않음 - IndexedDB에만 저장
-
-        channel.onmessage = async (event) => {
-          lastChunkReceiveTime = Date.now() // 메시지 수신 시마다 타임아웃 리셋
-          if (typeof event.data === 'string') {
-            // 제어 메시지 (JSON)
-            const msg: TransferMessage = JSON.parse(event.data)
-
-            switch (msg.type) {
-              case 'start':
-                // 전송 시작 - 이미 Offer에 정보가 있으므로 무시 가능
-                console.log(`[#19] 전송 시작: ${msg.totalChunks}개 청크`)
-                break
-
-              case 'request-ack': {
-                // 송신자가 ACK 요청 - 즉시 현재 상태 전송
-                let nextChunkIndex = 0
-                while (nextChunkIndex < offer.totalChunks && partialState!.receivedChunks.has(nextChunkIndex)) {
-                  nextChunkIndex++
-                }
-                const lastContinuousIndex = nextChunkIndex - 1
-
-                const ackMsg: AckMessage = {
-                  type: 'ack',
-                  receivedCount: partialState!.receivedChunks.size,
-                  nextChunkIndex: nextChunkIndex,
-                  lastContinuousIndex: lastContinuousIndex
-                }
-
-                if (channel.readyState === 'open') {
-                  try {
-                    channel.send(JSON.stringify(ackMsg))
-                    console.log(`[#20-ack] ACK 요청에 응답: received=${partialState!.receivedChunks.size}, next=${nextChunkIndex}, continuous=${lastContinuousIndex}`)
-                  } catch (error) {
-                    console.warn(`[#20-ack] ACK 응답 전송 실패:`, error)
-                  }
-                }
-                break
-              }
-
-              case 'complete': {
-                // 모든 청크가 도착했는지 확인
-                if (!isDownloadComplete(partialState!)) {
-                  await saveDownloadState(partialState!)
-                  reject(new Error(`청크 누락: ${partialState!.receivedChunks.size}/${offer.totalChunks}`))
-                  return
-                }
-
-                // 최종 저장 먼저 수행
-                if (pendingChunksBuffer.size > 0) {
-                  console.log(`[#19-complete] 최종 청크 저장 중: ${pendingChunksBuffer.size}개`)
-                  await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-                  await saveDownloadState(partialState!)
-                }
-
-                console.log(`[#19-complete] 전체 상태에서 청크 로드 중...`)
-                // DB에서 전체 상태 다시 로드 (메모리에서 제거된 청크들 포함)
-                const { loadDownloadState: reloadState } = useFileTransferState()
-                const fullState = await reloadState(offer.fileId)
-
-                if (!fullState) {
-                  reject(new Error('완료 후 상태 로드 실패'))
-                  return
-                }
-
-                // 청크 검증: 실제 데이터가 있는지 확인하고 누락된 청크 찾기
-                const missingChunks: number[] = []
-                for (let i = 0; i < offer.totalChunks; i++) {
-                  const chunk = fullState.chunks.get(i)
-                  if (!chunk) {
-                    missingChunks.push(i)
-                    // 메타데이터에서도 제거 (다음 재요청에 반영)
-                    partialState!.receivedChunks.delete(i)
-                  }
-                }
-
-                // 누락된 청크가 있으면 재요청
-                if (missingChunks.length > 0) {
-                  console.warn(`[#19-reRequest] 청크 누락 감지: ${missingChunks.length}개 (예: ${missingChunks.slice(0, 10).join(', ')}${missingChunks.length > 10 ? '...' : ''})`)
-
-                  // 메타데이터 업데이트 저장
-                  await saveDownloadState(partialState!)
-
-                  // 재요청 메시지 전송 (송신자에게 누락 청크 알림)
-                  const reRequestMsg = {
-                    type: 'reRequest',
-                    missingChunks: missingChunks
-                  }
-
-                  if (channel.readyState === 'open') {
-                    channel.send(JSON.stringify(reRequestMsg))
-                    console.log(`[#19-reRequest] 재요청 메시지 전송: ${missingChunks.length}개 청크`)
-                  } else {
-                    console.error(`[#19-reRequest] 채널 닫혀서 재요청 불가 - 상태: ${channel.readyState}`)
-                    await saveDownloadState(partialState!)
-                    reject(new Error(`청크 ${missingChunks.length}개 누락 (채널 닫힘)`))
-                  }
-
-                  // complete 처리 중단 - 재전송 대기
-                  return
-                }
-
-                // Blob 생성 - DB에서 로드한 전체 청크 사용
-                const validChunks: ArrayBuffer[] = []
-                for (let i = 0; i < offer.totalChunks; i++) {
-                  const chunk = fullState.chunks.get(i)!
-                  validChunks.push(chunk)
-                }
-                console.log(`[#19-complete] Blob 생성 중: ${validChunks.length}개 청크`)
-                const blob = new Blob(validChunks, { type: meta?.type || 'application/octet-stream' })
-
-                const receiveElapsed = performance.now() - receiveStartTime
-                const speedMBps = (blob.size / 1024 / 1024) / (receiveElapsed / 1000)
-                console.log(`[#19] P2P 수신 완료: ${(blob.size / 1024 / 1024).toFixed(2)}MB - ${receiveElapsed.toFixed(0)}ms, ${speedMBps.toFixed(2)} MB/s`)
-
-                // 캐시 저장 및 상태 삭제 (완료 시 최종 저장 보장)
-                try {
-                  clearInterval(timeoutChecker) // 타임아웃 체커 정리
-                  clearInterval(periodicAckSender) // 주기적 ACK sender 정리
-                  isResolved = true
-                  await cacheFile(offer.fileId, blob)
-                  // 완료 시 DB에서 삭제 (더 이상 이어받기 필요 없음)
-                  await deleteDownloadState(offer.fileId)
-                  completeTransfer(transferKey)
-                  channel.close()
-                  setTimeout(() => cleanup(connectionId), 1000)
-                  activeTransfers.delete(transferKey)
-                  console.log(`[#19-cleanup] 수신 상태 제거 (완료): ${transferKey}`)
-                  resolve(blob)
-                } catch (error) {
-                  activeTransfers.delete(transferKey)
-                  console.log(`[#19-cleanup] 수신 상태 제거 (캐시 실패): ${transferKey}`)
-                  reject(error)
-                }
-                break
-              }
-
-              case 'error':
-                // 에러 시 최종 저장 (이어받기 가능하도록)
-                if (pendingChunksBuffer.size > 0) {
-                  await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-                  await saveDownloadState(partialState!)
-                }
-                channel.close()
-                cleanup(connectionId)
-                activeTransfers.delete(transferKey)
-                console.log(`[#19-cleanup] 수신 상태 제거 (에러 메시지): ${transferKey}`)
-                reject(new Error(msg.message))
-                break
-            }
-          } else if (event.data instanceof ArrayBuffer) {
-            // ArrayBuffer - 결합된 버퍼 (인덱스 4바이트 + 청크 데이터)
-            const buffer = event.data as ArrayBuffer
-
-            // 최소 5바이트 이상이어야 함 (인덱스 4바이트 + 데이터 최소 1바이트)
-            if (buffer.byteLength < 5) {
-              console.warn(`[DirectTransfer] 잘못된 버퍼 크기: ${buffer.byteLength}`)
-              return
-            }
-
-            // 인덱스 추출 (첫 4바이트)
-            const view = new DataView(buffer)
-            const chunkIndex = view.getUint32(0, true) // 리틀 엔디안
-
-            // Guard: 청크 인덱스 유효성 검증
-            if (chunkIndex < 0 || chunkIndex >= offer.totalChunks) {
-              console.warn(`[DirectTransfer] 잘못된 청크 인덱스: ${chunkIndex} (totalChunks: ${offer.totalChunks})`)
-              return
-            }
-
-            // 중복 체크 - 중복이어도 ACK는 보내야 함 (송신자가 재전송 = ACK 못받음)
-            const isDuplicate = partialState!.receivedChunks.has(chunkIndex)
-            let shouldUpdate = false
-
-            if (!isDuplicate) {
-              // 데이터 추출 (4바이트 이후)
-              const chunkData = buffer.slice(4)
-
-              // 수신 확인 (메타데이터만 메모리, 실제 데이터는 DB로)
-              partialState!.receivedChunks.add(chunkIndex)
-              partialState!.timestamp = Date.now()
-
-              // 배치 버퍼에 추가 (DB 저장 대기)
-              pendingChunksBuffer.set(chunkIndex, chunkData)
-              pendingSaveChunks++
-
-              // UI 업데이트 최적화: 100청크마다만 업데이트
-              shouldUpdate = partialState!.receivedChunks.size % 100 === 0 || isDownloadComplete(partialState!)
-              // 실제 받은 바이트 추적 (청크 크기 * 개수, 단 totalBytes를 초과하지 않음)
-              // 마지막 청크는 CHUNK_SIZE보다 작을 수 있으므로 Math.min으로 상한 제한
-              const receivedBytes = Math.min(partialState!.receivedChunks.size * CHUNK_SIZE, offer.fileSize)
-              updateProgress(transferKey, partialState!.receivedChunks.size, shouldUpdate, receivedBytes)
-            } else {
-              console.log(`[#20-dup] 중복 청크 수신: ${chunkIndex} - ACK는 재전송`)
-            }
-
-            // ACK 전송: 중복이든 아니든 항상 전송 (송신자가 ACK 못받아서 재전송했을 수 있음)
-            // nextChunkIndex: 다음에 받고 싶은 청크 (0부터 연속으로 채운 다음 인덱스)
-            let nextChunkIndex = 0
-            while (nextChunkIndex < offer.totalChunks && partialState!.receivedChunks.has(nextChunkIndex)) {
-              nextChunkIndex++
-            }
-
-            // lastContinuousIndex: 0부터 연속으로 받은 마지막 인덱스
-            const lastContinuousIndex = nextChunkIndex - 1 // -1이면 아직 0번도 못받음
-
-            const ackMsg: AckMessage = {
-              type: 'ack',
-              receivedCount: partialState!.receivedChunks.size,
-              nextChunkIndex: nextChunkIndex,
-              lastContinuousIndex: lastContinuousIndex
-            }
-
-            if (channel.readyState === 'open') {
-              try {
-                channel.send(JSON.stringify(ackMsg))
-                // 타임아웃 디버깅을 위해 더 자주 로깅 (10청크마다 또는 중복일 때)
-                if (isDuplicate || partialState!.receivedChunks.size % 10 === 0) {
-                  console.log(`[#20-ack] ACK 전송${isDuplicate ? '(중복)' : ''}: received=${partialState!.receivedChunks.size}, next=${nextChunkIndex}, continuous=${lastContinuousIndex}`)
-                }
-              } catch (error) {
-                console.warn(`[#20-ack] ACK 전송 실패:`, error)
-              }
-            }
-
-            // 로그 최적화: 100청크마다만 출력
-            if (shouldUpdate) {
-              console.log(`[#20] P2P 수신: 청크 ${chunkIndex}, 총 ${partialState!.receivedChunks.size}/${offer.totalChunks} (${((partialState!.receivedChunks.size / offer.totalChunks) * 100).toFixed(0)}%)`)
-            }
-
-            // 메타데이터 저장 (10개마다) - 가볍고 빠름, 새로고침 시 이어받기 가능
-            if (!isDuplicate && !isSaving && partialState!.receivedChunks.size % DB_SAVE_META_INTERVAL === 0) {
-              isSaving = true
-              saveDownloadState(partialState!).catch(err => {
-                console.warn('[#20-meta] 메타데이터 저장 실패:', err)
-              }).finally(() => {
-                isSaving = false
-              })
-            }
-
-            // 배치 DB 저장 (DB_SAVE_CHUNK_INTERVAL개마다)
-            if (pendingSaveChunks >= DB_SAVE_CHUNK_INTERVAL && !isSaving) {
-              isSaving = true
-              const chunksToSave = new Map(pendingChunksBuffer) // 복사
-              const count = chunksToSave.size
-              pendingChunksBuffer.clear()
-              pendingSaveChunks = 0
-
-              // 백그라운드 배치 저장 (전송 블로킹 없음)
-              Promise.all([
-                saveChunksBatch(offer.fileId, chunksToSave),
-                saveDownloadState(partialState!)
-              ]).then(() => {
-                isSaving = false
-                console.log(`[#20] DB 배치 저장 완료: ${count}개 청크`)
-              }).catch((err) => {
-                isSaving = false
-                // 실패 시 버퍼에 다시 추가
-                for (const [idx, data] of chunksToSave) {
-                  pendingChunksBuffer.set(idx, data)
-                }
-                pendingSaveChunks += count
-                console.error('[DirectTransfer] DB 저장 실패:', err)
-              })
-            }
-          }
-        }
-
-        channel.onerror = async (error) => {
-          if (isResolved) return
-          isResolved = true
-          clearInterval(timeoutChecker)
-          clearInterval(periodicAckSender) // 주기적 ACK 전송 중지
-          // 에러 시 최종 저장 (이어받기 가능하도록)
-          if (pendingChunksBuffer.size > 0) {
-            await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-            await saveDownloadState(partialState!)
-          }
-          cleanup(connectionId)
-          activeTransfers.delete(transferKey)
-          cancelProgress(transferKey)
-          reject(error)
-        }
-
-        channel.onclose = async () => {
-          if (isResolved) return
-          if (!isDownloadComplete(partialState!)) {
-            isResolved = true
-            clearInterval(timeoutChecker)
-            clearInterval(periodicAckSender) // 주기적 ACK 전송 중지
-            // 채널 종료 시 최종 저장 (이어받기 가능하도록)
-            if (pendingChunksBuffer.size > 0) {
-              await saveChunksBatch(offer.fileId, pendingChunksBuffer)
-              await saveDownloadState(partialState!)
-            }
-            cleanup(connectionId)
-            activeTransfers.delete(transferKey)
-            cancelProgress(transferKey)
-            console.log(`[#19-cleanup] 수신 상태 제거 (채널 닫힘): ${transferKey}`)
-            reject(new Error('채널이 완료 전에 닫혔습니다'))
-          }
-        }
-      })
     } catch (error) {
-      console.error(`[P2P] 수신 실패:`, error)
+      console.error('[Transfer] Receive failed:', error)
       cancelProgress(transferKey)
+      throw error
+    } finally {
       cleanup(connectionId)
       activeTransfers.delete(transferKey)
-      console.log(`[#19-cleanup] 수신 상태 제거 (에러): ${transferKey}`)
-      throw error
     }
-    // finally 제거 - Promise가 resolve/reject될 때 cleanup 호출됨
   }
 
   return {
-    sendFileViaQueue,        // 큐 기반 전송
+    sendFileViaQueue,
     receiveFileDirect,
-    activeTransfers,         // 디버깅용
+    activeTransfers
   }
 }

@@ -26,7 +26,7 @@ export interface ElectronApi {
   // 설정 창 API
   openSettings: () => void
   // Watch Party API
-  openWatchParty: (roomId: string, youtubeUrl?: string) => void
+  openWatchParty: (roomId: string, youtubeUrl?: string, userName?: string) => void
   sendWatchPartyCommand: (command: string, data: string) => void
   // 알림 소리 API
   setNotificationSound: (audioData: ArrayBuffer) => Promise<boolean>
@@ -37,6 +37,9 @@ export interface ElectronApi {
   getNotificationVolume: () => Promise<number>
   setNotificationEnabled: (enabled: boolean) => Promise<void>
   getNotificationEnabled: () => Promise<boolean>
+  // 업데이트 API
+  checkForUpdates: () => Promise<{ available: boolean; message: string }>
+  getAppVersion: () => Promise<string>
 }
 
 // YouTube IFrame API 타입

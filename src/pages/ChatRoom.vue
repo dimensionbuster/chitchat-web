@@ -44,6 +44,7 @@ const activeRoomId = props.roomId?.trim() || 'default-room'
 const yjsReady = ref(false)
 const isUploading = ref(false)
 const isInitialLoad = ref(true)
+const isSendingMessage = ref(false) // 내가 메시지를 보내는 중인지 추적
 
 // Yjs & File Systems
 const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot, doc } = await useYjs(activeRoomId, me, myName.value)
@@ -110,7 +111,13 @@ const isDraggingOver = ref(false)
 // Watch Party - Electron에서 별도 창으로 열기
 const handleOpenWatchParty = () => {
   if (window.electronApi?.openWatchParty) {
-    window.electronApi.openWatchParty(activeRoomId)
+    // 채팅방의 이름만 전달 (localStorage의 순수 닉네임)
+    const pureName = localStorage.getItem('name') || ''
+    console.log('[ChatRoom] Opening WatchParty with:', {
+      roomId: activeRoomId,
+      name: pureName
+    })
+    window.electronApi.openWatchParty(activeRoomId, undefined, pureName)
   }
 }
 
@@ -150,11 +157,17 @@ const handleDrop = async (e: DragEvent) => {
 // Handlers
 const handleSend = (message: string) => {
   if (yjsReady.value) {
+    // 메시지 전송 시작 플래그 설정 (watch에서 알림이 울리지 않도록)
+    isSendingMessage.value = true
     sendTextMessage(me, myName.value, message)
     // 본인이 메시지를 보낼 때는 항상 최신 메시지로 이동
     resetToLatest()
     nextTick(() => {
       messageListRef.value?.scrollToBottom()
+      // 스크롤 완료 후 플래그 해제 (약간의 지연을 두어 watch 트리거가 완료되도록)
+      setTimeout(() => {
+        isSendingMessage.value = false
+      }, 150)
     })
   }
 }
@@ -164,6 +177,8 @@ const handleUploadFile = async (file: File) => {
 
   try {
     isUploading.value = true
+    // 파일 전송 시작 플래그 설정 (watch에서 알림이 울리지 않도록)
+    isSendingMessage.value = true
     console.log('파일 업로드:', file.name, file.type)
     const { fileId, meta } = await prepareFile(file)
     attachFileMeta(fileId, meta, me, myName.value)
@@ -176,10 +191,16 @@ const handleUploadFile = async (file: File) => {
     await nextTick()
     messageListRef.value?.scrollToBottom()
 
+    // 스크롤 완료 후 플래그 해제
+    setTimeout(() => {
+      isSendingMessage.value = false
+    }, 150)
+
     console.log('업로드 완료:', fileId)
   } catch (error) {
     console.error('업로드 실패:', error)
     await showAlert('파일 업로드에 실패했습니다.')
+    isSendingMessage.value = false // 에러 발생 시에도 플래그 해제
   } finally {
     isUploading.value = false
   }
@@ -360,7 +381,9 @@ watch(messagesRef, async (newMessages) => {
   await processAutoDownload(messagesRef.value.slice(-RECENT_MESSAGES_TO_LOAD))
 
   const currentTotalCount = messagesMap.size // Y.Map의 실제 크기
-  if (!isInitialLoad.value && currentTotalCount > previousTotalMessageCount) {
+
+  // 내가 메시지를 보내는 중이면 알림을 울리지 않음 (중복 알림 방지)
+  if (!isInitialLoad.value && currentTotalCount > previousTotalMessageCount && !isSendingMessage.value) {
     const newMessage = newMessages[newMessages.length - 1]
     if (newMessage && newMessage.authorTrueUuid !== me) {
       // 이미 알림을 보낸 메시지인지 확인

@@ -91,7 +91,9 @@ const handleWatchParty = (youtubeUrl: string) => {
   console.log('[ChatMessage] Extracted roomId:', roomId)
 
   if (window.electronApi?.openWatchParty) {
-    window.electronApi.openWatchParty(roomId, youtubeUrl)
+    // 채팅방의 이름만 전달
+    const name = localStorage.getItem('name') || ''
+    window.electronApi.openWatchParty(roomId, youtubeUrl, name)
   }
 }
 

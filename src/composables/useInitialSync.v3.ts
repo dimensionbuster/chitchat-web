@@ -3,19 +3,27 @@
  *
  * 시그널링 서버를 통해 WebRTC 연결을 수립하고,
  * 브라우저 간 직접 DataChannel로 초기 상태 전송
+ *
+ * Refactored based on useDirectFileTransfer patterns
  */
 
 import * as Y from 'yjs'
 import type { useSignalingServer } from './useSignalingServer'
 
-const CHUNK_SIZE = 64 * 1024 // 64KB (useDirectFileTransfer와 동일)
-const MAX_BUFFER_SIZE = 12 * 1024 * 1024 // 12MB (high-water mark)
-const BUFFER_LOW_WATERMARK = 2 * 1024 * 1024 // 2MB (low-water mark)
-const ACK_WINDOW = 20 // 20개 청크마다 ACK 확인 (1.28MB)
-const ACK_TIMEOUT = 15000 // ACK 대기 타임아웃 15초
-const BUFFER_WAIT_TIMEOUT = 30000 // 버퍼 대기 최대 30초
-const BUFFER_CHECK_INTERVAL = 100 // 버퍼 체크 간격 100ms
-const BUFFER_CRITICAL = 512 * 1024 // 512KB - 즉시 대기 필요
+// ===== Constants =====
+const CHUNK_SIZE = 32 * 1024 // 32KB
+const MAX_BUFFER_SIZE = 4 * 1024 * 1024 // 4MB
+const BUFFER_LOW_WATERMARK = 512 * 1024 // 512KB
+const BUFFER_CRITICAL = 128 * 1024 // 128KB
+const ACK_WINDOW = 10 // 청크 단위
+const ACK_TIMEOUT = 5000 // ms
+const PERIODIC_ACK_INTERVAL = 4000 // ms
+const BUFFER_CHECK_INTERVAL = 100 // ms
+const HANDSHAKE_TIMEOUT = 5000 // ms
+const TRANSFER_TIMEOUT = 5 * 60 * 1000 // 5분
+const RECEIVE_TIMEOUT = 30000 // 30초
+const REQUEST_TIMEOUT = 15000 // 요청 응답 대기
+const MAX_RETRIES = 3
 
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -23,6 +31,7 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'turns:turn.gongbbu.com:5349', username: 'gongbbu', credential: 'gongbbu' },
 ]
 
+// ===== Types =====
 /**
  * 시그널링 메시지 타입 (시그널링 서버를 통해서만 전송)
  */
@@ -63,96 +72,904 @@ type SignalingMessage = SyncRequestMessage | SyncOfferMessage | SyncAnswerMessag
 /**
  * DataChannel 메시지 타입 (브라우저 간 직접 전송)
  */
-type SyncChunkMessage = {
-  type: 'sync-chunk'
-  chunkIndex: number
+type StartMessage = {
+  type: 'start'
   totalChunks: number
-  data: ArrayBuffer
+  snapshotSize: number
+  chunkSize: number
 }
 
-type SyncCompleteMessage = {
-  type: 'sync-complete'
+type CompleteMessage = { type: 'complete' }
+type ErrorMessage = { type: 'error'; message: string }
+type AckMessage = {
+  type: 'ack'
+  receivedCount: number
+  nextChunkIndex: number
+  lastContinuousIndex: number
+}
+type RequestAckMessage = { type: 'request-ack' }
+type ReRequestMessage = { type: 'reRequest'; missingChunks: number[] }
+
+type TransferMessage =
+  | StartMessage
+  | CompleteMessage
+  | ErrorMessage
+  | AckMessage
+  | RequestAckMessage
+  | ReRequestMessage
+
+type TransferState = 'idle' | 'handshake' | 'transferring' | 'completing' | 'completed' | 'failed'
+
+// ===== 리소스 관리 클래스 =====
+class ResourceManager {
+  private cleanupFns: Array<() => void> = []
+
+  add(cleanup: () => void): void {
+    this.cleanupFns.push(cleanup)
+  }
+
+  cleanup(): void {
+    this.cleanupFns.forEach(fn => {
+      try {
+        fn()
+      } catch (error) {
+        console.warn('[InitialSync:ResourceManager] Cleanup error:', error)
+      }
+    })
+    this.cleanupFns = []
+  }
 }
 
-type SyncAckMessage = {
-  type: 'sync-ack'
-  success: boolean
-  message?: string
+// ===== 송신자 클래스 =====
+class SnapshotSender {
+  private state: TransferState = 'idle'
+  private resources = new ResourceManager()
+  private aborted = false
+  private confirmedNextChunk = 0
+  private lastProgressTime = Date.now()
+  private lastAckRequestTime = Date.now()
+  private currentChunkIndex = 0
+
+  constructor(
+    private snapshot: Uint8Array,
+    private totalChunks: number,
+    private snapshotSize: number
+  ) {}
+
+  async send(channel: RTCDataChannel): Promise<void> {
+    try {
+      this.state = 'handshake'
+      await this.waitForChannelOpen(channel)
+      await this.performHandshake(channel)
+
+      this.state = 'transferring'
+      await this.transferChunks(channel)
+
+      this.state = 'completing'
+      await this.handleCompletion(channel)
+
+      this.state = 'completed'
+    } catch (error) {
+      this.state = 'failed'
+      throw error
+    } finally {
+      this.resources.cleanup()
+    }
+  }
+
+  abort(): void {
+    this.aborted = true
+    this.state = 'failed'
+  }
+
+  private async waitForChannelOpen(channel: RTCDataChannel): Promise<void> {
+    if (channel.readyState === 'open') return
+
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Channel open timeout'))
+      }, HANDSHAKE_TIMEOUT)
+
+      const openHandler = () => {
+        clearTimeout(timeout)
+        resolve()
+      }
+
+      const errorHandler = () => {
+        clearTimeout(timeout)
+        reject(new Error('Channel error'))
+      }
+
+      channel.addEventListener('open', openHandler, { once: true })
+      channel.addEventListener('error', errorHandler, { once: true })
+
+      this.resources.add(() => {
+        clearTimeout(timeout)
+        channel.removeEventListener('open', openHandler)
+        channel.removeEventListener('error', errorHandler)
+      })
+    })
+  }
+
+  private async performHandshake(channel: RTCDataChannel): Promise<void> {
+    const startMsg: StartMessage = {
+      type: 'start',
+      totalChunks: this.totalChunks,
+      snapshotSize: this.snapshotSize,
+      chunkSize: CHUNK_SIZE
+    }
+    channel.send(JSON.stringify(startMsg))
+
+    // Setup message handler for ACK
+    const messageHandler = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return
+
+      try {
+        const msg = JSON.parse(event.data) as TransferMessage
+
+        if (msg.type === 'start') {
+          // Receiver ready
+        } else if (msg.type === 'ack') {
+          if (msg.nextChunkIndex > this.confirmedNextChunk) {
+            this.confirmedNextChunk = msg.nextChunkIndex
+          }
+        }
+      } catch (error) {
+        console.warn('[InitialSync:Sender] Message parse error:', error)
+      }
+    }
+
+    channel.addEventListener('message', messageHandler)
+    this.resources.add(() => channel.removeEventListener('message', messageHandler))
+
+    // Wait a bit for receiver to process start message
+    await this.sleep(100)
+  }
+
+  private async transferChunks(channel: RTCDataChannel): Promise<void> {
+    this.currentChunkIndex = this.confirmedNextChunk
+    const ackHandler = this.createAckHandler(channel)
+
+    try {
+      while (this.currentChunkIndex < this.totalChunks) {
+        this.checkAbort()
+        this.checkTimeout()
+
+        // Flow control: ACK-based backpressure
+        await this.waitForAck(channel, this.currentChunkIndex)
+
+        // Flow control: Buffer management
+        await this.waitForBuffer(channel)
+
+        // Send chunk
+        await this.sendChunk(channel, this.currentChunkIndex)
+        this.currentChunkIndex++
+
+        // Update progress
+        this.lastProgressTime = Date.now()
+
+        if ((this.currentChunkIndex % 50 === 0) || this.currentChunkIndex === this.totalChunks) {
+          const progress = ((this.currentChunkIndex / this.totalChunks) * 100).toFixed(0)
+          console.log(`[InitialSync:Sender] Progress: ${this.currentChunkIndex}/${this.totalChunks} (${progress}%)`)
+        }
+
+        // Periodic ACK request
+        if (Date.now() - this.lastAckRequestTime > PERIODIC_ACK_INTERVAL) {
+          this.requestAck(channel)
+          this.lastAckRequestTime = Date.now()
+        }
+      }
+    } finally {
+      channel.removeEventListener('message', ackHandler)
+    }
+  }
+
+  private createAckHandler(channel: RTCDataChannel): (event: MessageEvent) => void {
+    const handler = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return
+
+      try {
+        const msg = JSON.parse(event.data) as TransferMessage
+
+        if (msg.type === 'ack') {
+          if (msg.nextChunkIndex > this.confirmedNextChunk) {
+            this.confirmedNextChunk = msg.nextChunkIndex
+          }
+        } else if (msg.type === 'reRequest') {
+          // Backtrack to minimum missing chunk
+          const minMissing = Math.min(...msg.missingChunks)
+          if (this.confirmedNextChunk > minMissing) {
+            this.confirmedNextChunk = minMissing
+          }
+        }
+      } catch (error) {
+        console.warn('[InitialSync:Sender] ACK handler error:', error)
+      }
+    }
+
+    channel.addEventListener('message', handler)
+    return handler
+  }
+
+  private async waitForAck(channel: RTCDataChannel, currentChunkIndex: number): Promise<void> {
+    const gap = currentChunkIndex - this.confirmedNextChunk
+
+    if (gap < ACK_WINDOW) return
+
+    const waitStart = Date.now()
+    while (currentChunkIndex - this.confirmedNextChunk >= ACK_WINDOW) {
+      this.checkAbort()
+
+      if (Date.now() - waitStart > ACK_TIMEOUT) {
+        this.requestAck(channel)
+        await this.sleep(1000)
+
+        if (currentChunkIndex - this.confirmedNextChunk >= ACK_WINDOW) {
+          console.warn('[InitialSync:Sender] ACK timeout, backtracking')
+          break
+        }
+      }
+
+      await this.sleep(100)
+    }
+  }
+
+  private async waitForBuffer(channel: RTCDataChannel): Promise<void> {
+    if (channel.bufferedAmount <= MAX_BUFFER_SIZE) return
+
+    const waitStart = Date.now()
+    while (channel.bufferedAmount > BUFFER_LOW_WATERMARK) {
+      this.checkAbort()
+
+      if (Date.now() - waitStart > TRANSFER_TIMEOUT) {
+        throw new Error('Buffer wait timeout')
+      }
+
+      await this.sleep(BUFFER_CHECK_INTERVAL)
+    }
+  }
+
+  private async sendChunk(channel: RTCDataChannel, chunkIndex: number): Promise<void> {
+    // Wait for buffer before send
+    while (channel.bufferedAmount > BUFFER_CRITICAL) {
+      this.checkAbort()
+      await this.sleep(20)
+    }
+
+    // Slice and send
+    const chunkStart = chunkIndex * CHUNK_SIZE
+    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, this.snapshotSize)
+    const chunkData = this.snapshot.slice(chunkStart, chunkEnd)
+
+    // Combine index + data
+    const combinedBuffer = new ArrayBuffer(4 + chunkData.byteLength)
+    const view = new DataView(combinedBuffer)
+    view.setUint32(0, chunkIndex, true)
+    new Uint8Array(combinedBuffer, 4).set(chunkData)
+
+    channel.send(combinedBuffer)
+  }
+
+  private async handleCompletion(channel: RTCDataChannel): Promise<void> {
+    let retryCount = 0
+    let reRequestReceived = false
+    let missingChunks: number[] = []
+
+    const reRequestHandler = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return
+
+      try {
+        const msg = JSON.parse(event.data) as TransferMessage
+        if (msg.type === 'reRequest') {
+          missingChunks = msg.missingChunks
+          reRequestReceived = true
+        }
+      } catch (error) {
+        console.warn('[InitialSync:Sender] ReRequest handler error:', error)
+      }
+    }
+
+    channel.addEventListener('message', reRequestHandler)
+    this.resources.add(() => channel.removeEventListener('message', reRequestHandler))
+
+    while (retryCount < MAX_RETRIES) {
+      // Wait for buffer to clear
+      while (channel.bufferedAmount > 0) {
+        await this.sleep(100)
+      }
+
+      // Send complete message
+      const completeMsg: CompleteMessage = { type: 'complete' }
+      channel.send(JSON.stringify(completeMsg))
+
+      // Wait for reRequest
+      reRequestReceived = false
+      missingChunks = []
+      const waitStart = Date.now()
+
+      while (!reRequestReceived && Date.now() - waitStart < 3000) {
+        this.checkAbort()
+        await this.sleep(100)
+
+        if (channel.readyState !== 'open') break
+      }
+
+      // No reRequest means success
+      if (!reRequestReceived || missingChunks.length === 0) {
+        console.log('[InitialSync:Sender] Transfer completed successfully')
+        return
+      }
+
+      // Resend missing chunks
+      console.log(`[InitialSync:Sender] Resending ${missingChunks.length} chunks`)
+      for (const chunkIndex of missingChunks) {
+        this.checkAbort()
+        await this.sendChunk(channel, chunkIndex)
+      }
+
+      retryCount++
+    }
+
+    if (retryCount >= MAX_RETRIES) {
+      console.warn('[InitialSync:Sender] Max retries reached, forcing completion')
+    }
+  }
+
+  private requestAck(channel: RTCDataChannel): void {
+    if (channel.readyState !== 'open') return
+
+    try {
+      const msg: RequestAckMessage = { type: 'request-ack' }
+      channel.send(JSON.stringify(msg))
+    } catch (error) {
+      console.warn('[InitialSync:Sender] ACK request failed:', error)
+    }
+  }
+
+  private checkAbort(): void {
+    if (this.aborted) {
+      throw new Error('Transfer aborted')
+    }
+  }
+
+  private checkTimeout(): void {
+    if (Date.now() - this.lastProgressTime > TRANSFER_TIMEOUT) {
+      throw new Error('Transfer timeout')
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
 }
 
-type SyncChunkAckMessage = {
-  type: 'sync-chunk-ack'
-  upToIndex: number // 이 인덱스까지 수신 완료
+// ===== 수신자 클래스 =====
+class SnapshotReceiver {
+  private state: TransferState = 'idle'
+  private resources = new ResourceManager()
+  private aborted = false
+  private lastChunkReceiveTime = Date.now()
+  private receivedChunks = new Map<number, ArrayBuffer>()
+  private expectedTotalChunks = 0
+  private expectedSnapshotSize = 0
+
+  constructor() {}
+
+  async receive(channel: RTCDataChannel): Promise<Uint8Array> {
+    try {
+      this.state = 'handshake'
+      await this.waitForChannelOpen(channel)
+      await this.performHandshake(channel)
+
+      this.state = 'transferring'
+      const snapshot = await this.receiveChunks(channel)
+
+      this.state = 'completed'
+      return snapshot
+    } catch (error) {
+      this.state = 'failed'
+      throw error
+    } finally {
+      this.resources.cleanup()
+    }
+  }
+
+  abort(): void {
+    this.aborted = true
+    this.state = 'failed'
+  }
+
+  private async waitForChannelOpen(channel: RTCDataChannel): Promise<void> {
+    if (channel.readyState === 'open') return
+
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Channel open timeout'))
+      }, HANDSHAKE_TIMEOUT)
+
+      const openHandler = () => {
+        clearTimeout(timeout)
+        resolve()
+      }
+
+      const errorHandler = () => {
+        clearTimeout(timeout)
+        reject(new Error('Channel error'))
+      }
+
+      channel.addEventListener('open', openHandler, { once: true })
+      channel.addEventListener('error', errorHandler, { once: true })
+
+      this.resources.add(() => {
+        clearTimeout(timeout)
+        channel.removeEventListener('open', openHandler)
+        channel.removeEventListener('error', errorHandler)
+      })
+    })
+  }
+
+  private async performHandshake(channel: RTCDataChannel): Promise<void> {
+    // Wait for start message
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Handshake timeout'))
+      }, HANDSHAKE_TIMEOUT)
+
+      const messageHandler = (event: MessageEvent) => {
+        if (typeof event.data !== 'string') return
+
+        try {
+          const msg = JSON.parse(event.data) as TransferMessage
+
+          if (msg.type === 'start') {
+            this.expectedTotalChunks = msg.totalChunks
+            this.expectedSnapshotSize = msg.snapshotSize
+
+            // Send start response
+            const response: StartMessage = {
+              type: 'start',
+              totalChunks: msg.totalChunks,
+              snapshotSize: msg.snapshotSize,
+              chunkSize: CHUNK_SIZE
+            }
+            channel.send(JSON.stringify(response))
+
+            clearTimeout(timeout)
+            channel.removeEventListener('message', messageHandler)
+            resolve()
+          }
+        } catch (error) {
+          console.warn('[InitialSync:Receiver] Handshake message parse error:', error)
+        }
+      }
+
+      channel.addEventListener('message', messageHandler)
+
+      this.resources.add(() => {
+        clearTimeout(timeout)
+        channel.removeEventListener('message', messageHandler)
+      })
+    })
+  }
+
+  private async receiveChunks(channel: RTCDataChannel): Promise<Uint8Array> {
+    return new Promise<Uint8Array>((resolve, reject) => {
+      const periodicAck = this.setupPeriodicAck(channel)
+      const timeoutChecker = this.setupTimeoutChecker()
+      let isResolved = false
+
+      const resolveOnce = (result: Uint8Array | Error) => {
+        if (isResolved) return
+        isResolved = true
+
+        clearInterval(periodicAck)
+        clearInterval(timeoutChecker)
+
+        if (result instanceof Error) {
+          reject(result)
+        } else {
+          resolve(result)
+        }
+      }
+
+      const messageHandler = async (event: MessageEvent) => {
+        this.lastChunkReceiveTime = Date.now()
+
+        if (typeof event.data === 'string') {
+          await this.handleControlMessage(event.data, channel, resolveOnce)
+        } else if (event.data instanceof ArrayBuffer) {
+          await this.handleChunkData(event.data, channel)
+        }
+      }
+
+      const errorHandler = () => {
+        resolveOnce(new Error('Channel error'))
+      }
+
+      const closeHandler = () => {
+        if (!this.isComplete()) {
+          resolveOnce(new Error('Channel closed before completion'))
+        }
+      }
+
+      channel.addEventListener('message', messageHandler)
+      channel.addEventListener('error', errorHandler)
+      channel.addEventListener('close', closeHandler)
+
+      this.resources.add(() => {
+        channel.removeEventListener('message', messageHandler)
+        channel.removeEventListener('error', errorHandler)
+        channel.removeEventListener('close', closeHandler)
+      })
+    })
+  }
+
+  private setupPeriodicAck(channel: RTCDataChannel): number {
+    const interval = setInterval(() => {
+      if (this.state === 'completed' || channel.readyState !== 'open') return
+
+      if (Date.now() - this.lastChunkReceiveTime > 1000) {
+        this.sendAck(channel)
+      }
+    }, PERIODIC_ACK_INTERVAL)
+
+    this.resources.add(() => clearInterval(interval))
+    return interval
+  }
+
+  private setupTimeoutChecker(): number {
+    const interval = setInterval(() => {
+      if (this.state === 'completed') return
+
+      if (Date.now() - this.lastChunkReceiveTime > RECEIVE_TIMEOUT) {
+        console.error('[InitialSync:Receiver] Receive timeout')
+        this.abort()
+      }
+    }, 5000)
+
+    this.resources.add(() => clearInterval(interval))
+    return interval
+  }
+
+  private async handleControlMessage(
+    data: string,
+    channel: RTCDataChannel,
+    resolveOnce: (result: Uint8Array | Error) => void
+  ): Promise<void> {
+    try {
+      const msg = JSON.parse(data) as TransferMessage
+
+      if (msg.type === 'request-ack') {
+        this.sendAck(channel)
+      } else if (msg.type === 'complete') {
+        await this.handleComplete(channel, resolveOnce)
+      } else if (msg.type === 'error') {
+        resolveOnce(new Error(msg.message))
+      }
+    } catch (error) {
+      console.warn('[InitialSync:Receiver] Control message error:', error)
+    }
+  }
+
+  private async handleChunkData(buffer: ArrayBuffer, channel: RTCDataChannel): Promise<void> {
+    if (buffer.byteLength < 5) return
+
+    // Extract index
+    const view = new DataView(buffer)
+    const chunkIndex = view.getUint32(0, true)
+
+    if (chunkIndex < 0 || chunkIndex >= this.expectedTotalChunks) {
+      console.warn(`[InitialSync:Receiver] Invalid chunk index: ${chunkIndex}`)
+      return
+    }
+
+    // Check duplicate
+    const isDuplicate = this.receivedChunks.has(chunkIndex)
+
+    if (!isDuplicate) {
+      // Extract data
+      const chunkData = buffer.slice(4)
+      this.receivedChunks.set(chunkIndex, chunkData)
+
+      if ((this.receivedChunks.size % 50 === 0) || this.receivedChunks.size === this.expectedTotalChunks) {
+        const progress = ((this.receivedChunks.size / this.expectedTotalChunks) * 100).toFixed(0)
+        console.log(`[InitialSync:Receiver] Progress: ${this.receivedChunks.size}/${this.expectedTotalChunks} (${progress}%)`)
+      }
+    }
+
+    // Always send ACK
+    this.sendAck(channel)
+
+    // Check if complete
+    if (this.receivedChunks.size === this.expectedTotalChunks) {
+      // Don't resolve here, wait for complete message
+    }
+  }
+
+  private async handleComplete(
+    channel: RTCDataChannel,
+    resolveOnce: (result: Uint8Array | Error) => void
+  ): Promise<void> {
+    // Find missing chunks
+    const missingChunks: number[] = []
+    for (let i = 0; i < this.expectedTotalChunks; i++) {
+      if (!this.receivedChunks.has(i)) {
+        missingChunks.push(i)
+      }
+    }
+
+    // Request missing chunks
+    if (missingChunks.length > 0 && channel.readyState === 'open') {
+      console.log(`[InitialSync:Receiver] Requesting ${missingChunks.length} missing chunks`)
+
+      const reRequestMsg: ReRequestMessage = {
+        type: 'reRequest',
+        missingChunks
+      }
+      channel.send(JSON.stringify(reRequestMsg))
+      return
+    }
+
+    // Merge chunks
+    try {
+      const merged = new Uint8Array(this.expectedSnapshotSize)
+      let offset = 0
+
+      for (let i = 0; i < this.expectedTotalChunks; i++) {
+        const chunk = this.receivedChunks.get(i)
+        if (!chunk) {
+          throw new Error(`Chunk ${i} missing`)
+        }
+        merged.set(new Uint8Array(chunk), offset)
+        offset += chunk.byteLength
+      }
+
+      const finalSnapshot = offset === this.expectedSnapshotSize ? merged : merged.slice(0, offset)
+
+      console.log('[InitialSync:Receiver] Snapshot merged successfully')
+      resolveOnce(finalSnapshot)
+    } catch (error) {
+      console.error('[InitialSync:Receiver] Snapshot merge failed:', error)
+      resolveOnce(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
+  private sendAck(channel: RTCDataChannel): void {
+    if (channel.readyState !== 'open') return
+
+    try {
+      let nextChunkIndex = 0
+      while (nextChunkIndex < this.expectedTotalChunks && this.receivedChunks.has(nextChunkIndex)) {
+        nextChunkIndex++
+      }
+
+      const ackMsg: AckMessage = {
+        type: 'ack',
+        receivedCount: this.receivedChunks.size,
+        nextChunkIndex,
+        lastContinuousIndex: nextChunkIndex - 1
+      }
+
+      channel.send(JSON.stringify(ackMsg))
+    } catch (error) {
+      console.warn('[InitialSync:Receiver] ACK send failed:', error)
+    }
+  }
+
+  private isComplete(): boolean {
+    return this.receivedChunks.size === this.expectedTotalChunks
+  }
 }
 
-type DataChannelMessage = SyncChunkMessage | SyncCompleteMessage | SyncAckMessage | SyncChunkAckMessage
+// ===== WebRTC 연결 관리 클래스 =====
+class WebRTCManager {
+  private peerConnection: RTCPeerConnection | null = null
+  private dataChannel: RTCDataChannel | null = null
+  private pendingIceCandidates: RTCIceCandidateInit[] = []
+  private resources = new ResourceManager()
 
-/**
- * 초기 동기화 composable
- */
-export function useInitialSync(
-  signaling: ReturnType<typeof useSignalingServer>,
-  myUuid: string,
-  doc: Y.Doc,
-  roomId: string,
-) {
-  const syncTopic = `room-${roomId}-sync`
+  constructor(
+    private signaling: ReturnType<typeof useSignalingServer>,
+    private myUuid: string,
+    private targetUuid: string,
+    private syncTopic: string
+  ) {}
 
-  // WebRTC 연결 관리
-  let peerConnection: RTCPeerConnection | null = null
-  let dataChannel: RTCDataChannel | null = null
-  const pendingIceCandidates: RTCIceCandidateInit[] = []
+  async createOfferConnection(onChannelOpen: (channel: RTCDataChannel) => void): Promise<void> {
+    this.peerConnection = this.createPeerConnection()
 
-  // 수신 버퍼 - 스트리밍 병합을 위한 최소 메모리 사용
-  const receivedChunks = new Map<number, ArrayBuffer>() // 순서 보장 안되므로 임시 저장
-  let expectedTotalChunks = 0
-  let expectedSnapshotSize = 0 // 전체 크기 (미리 할당용)
-  let syncResolve: ((snapshot: Uint8Array | null) => void) | null = null
-  let syncReject: ((error: Error) => void) | null = null
-  let isReceiving = false // 현재 수신 중인지 여부
-  let cleanupTimer: ReturnType<typeof setTimeout> | null = null
-  let lastAckedIndex = -1 // 마지막으로 ACK 보낸 연속 인덱스
+    // Create DataChannel
+    this.dataChannel = this.peerConnection.createDataChannel('initial-sync', {
+      ordered: true,
+      maxRetransmits: 3
+    })
 
-  /**
-   * PeerConnection 생성
-   */
-  function createPeerConnection(targetUuid: string): RTCPeerConnection {
+    this.dataChannel.onopen = () => {
+      console.log('[InitialSync:WebRTC] DataChannel opened')
+      if (this.dataChannel) {
+        onChannelOpen(this.dataChannel)
+      }
+    }
+
+    this.dataChannel.onerror = (error) => {
+      console.error('[InitialSync:WebRTC] DataChannel error:', error)
+    }
+
+    this.dataChannel.onclose = () => {
+      console.log('[InitialSync:WebRTC] DataChannel closed')
+    }
+
+    // Create offer
+    const offer = await this.peerConnection.createOffer()
+    await this.peerConnection.setLocalDescription(offer)
+
+    // Send offer via signaling
+    const offerMessage: SyncOfferMessage = {
+      messageType: 'sync-offer',
+      senderUuid: this.myUuid,
+      targetUuid: this.targetUuid,
+      totalChunks: 0, // Will be set by sender
+      snapshotSize: 0, // Will be set by sender
+      sdp: offer,
+      timestamp: Date.now()
+    }
+
+    this.signaling.publish(this.syncTopic, offerMessage as unknown as Record<string, unknown>)
+    console.log('[InitialSync:WebRTC] Offer sent')
+  }
+
+  async createAnswerConnection(
+    offer: SyncOfferMessage,
+    onChannelReceived: (channel: RTCDataChannel) => void
+  ): Promise<void> {
+    this.peerConnection = this.createPeerConnection()
+
+    // Handle incoming DataChannel
+    this.peerConnection.ondatachannel = (event) => {
+      this.dataChannel = event.channel
+      console.log('[InitialSync:WebRTC] DataChannel received')
+
+      this.dataChannel.onopen = () => {
+        console.log('[InitialSync:WebRTC] DataChannel opened')
+        if (this.dataChannel) {
+          onChannelReceived(this.dataChannel)
+        }
+      }
+
+      this.dataChannel.onerror = (error) => {
+        console.error('[InitialSync:WebRTC] DataChannel error:', error)
+      }
+
+      this.dataChannel.onclose = () => {
+        console.log('[InitialSync:WebRTC] DataChannel closed')
+      }
+    }
+
+    // Set remote description
+    await this.peerConnection.setRemoteDescription(offer.sdp)
+
+    // Create answer
+    const answer = await this.peerConnection.createAnswer()
+    await this.peerConnection.setLocalDescription(answer)
+
+    // Send answer via signaling
+    const answerMessage: SyncAnswerMessage = {
+      messageType: 'sync-answer',
+      receiverUuid: this.myUuid,
+      targetUuid: offer.senderUuid,
+      sdp: answer,
+      timestamp: Date.now()
+    }
+
+    this.signaling.publish(this.syncTopic, answerMessage as unknown as Record<string, unknown>)
+    console.log('[InitialSync:WebRTC] Answer sent')
+
+    // Add pending ICE candidates
+    this.addPendingIceCandidates()
+  }
+
+  async handleAnswer(answer: SyncAnswerMessage): Promise<void> {
+    if (!this.peerConnection) {
+      console.warn('[InitialSync:WebRTC] No peer connection for answer')
+      return
+    }
+
+    await this.peerConnection.setRemoteDescription(answer.sdp)
+    console.log('[InitialSync:WebRTC] Answer processed')
+
+    // Add pending ICE candidates
+    this.addPendingIceCandidates()
+  }
+
+  handleIceCandidate(candidate: RTCIceCandidateInit): void {
+    if (this.peerConnection && this.peerConnection.remoteDescription) {
+      this.peerConnection.addIceCandidate(candidate).catch(console.error)
+    } else {
+      this.pendingIceCandidates.push(candidate)
+    }
+  }
+
+  private createPeerConnection(): RTCPeerConnection {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         const iceMessage: SyncIceMessage = {
           messageType: 'sync-ice',
-          fromUuid: myUuid,
-          toUuid: targetUuid,
+          fromUuid: this.myUuid,
+          toUuid: this.targetUuid,
           candidate: event.candidate.toJSON(),
-          timestamp: Date.now(),
+          timestamp: Date.now()
         }
-        signaling.publish(syncTopic, iceMessage as unknown as Record<string, unknown>)
+        this.signaling.publish(this.syncTopic, iceMessage as unknown as Record<string, unknown>)
       }
     }
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`[InitialSync] ICE 상태: ${pc.iceConnectionState}`)
+      console.log(`[InitialSync:WebRTC] ICE state: ${pc.iceConnectionState}`)
     }
 
     pc.onconnectionstatechange = () => {
-      console.log(`[InitialSync] 연결 상태: ${pc.connectionState}`)
+      console.log(`[InitialSync:WebRTC] Connection state: ${pc.connectionState}`)
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        cleanup()
+        this.cleanup()
       }
     }
 
     return pc
   }
 
+  private addPendingIceCandidates(): void {
+    if (this.pendingIceCandidates.length > 0) {
+      console.log(`[InitialSync:WebRTC] Adding ${this.pendingIceCandidates.length} pending ICE candidates`)
+      this.pendingIceCandidates.forEach((candidate) => {
+        this.peerConnection?.addIceCandidate(candidate).catch(console.error)
+      })
+      this.pendingIceCandidates.length = 0
+    }
+  }
+
+  getDataChannel(): RTCDataChannel | null {
+    return this.dataChannel
+  }
+
+  cleanup(): void {
+    if (this.dataChannel) {
+      if (this.dataChannel.readyState === 'open') {
+        this.dataChannel.close()
+      }
+      this.dataChannel = null
+    }
+
+    if (this.peerConnection) {
+      this.peerConnection.close()
+      this.peerConnection = null
+    }
+
+    this.pendingIceCandidates.length = 0
+    this.resources.cleanup()
+  }
+}
+
+// ===== Main Composable =====
+export function useInitialSync(
+  signaling: ReturnType<typeof useSignalingServer>,
+  myUuid: string,
+  doc: Y.Doc,
+  roomId: string
+) {
+  const syncTopic = `room-${roomId}-sync`
+  let webrtcManager: WebRTCManager | null = null
+  let currentSender: SnapshotSender | null = null
+  let currentReceiver: SnapshotReceiver | null = null
+  let syncResolve: ((snapshot: Uint8Array | null) => void) | null = null
+  let syncReject: ((error: Error) => void) | null = null
+
   /**
    * 시그널링 메시지 핸들러
    */
   function handleSignalingMessage(message: Record<string, unknown>) {
     const msg = message as unknown as SignalingMessage
-
-    console.log('[InitialSync] 시그널링 메시지 수신:', msg.messageType)
 
     switch (msg.messageType) {
       case 'sync-request':
@@ -171,217 +988,48 @@ export function useInitialSync(
   }
 
   /**
-   * DataChannel 메시지 핸들러
-   */
-  function handleDataChannelMessage(event: MessageEvent) {
-    if (event.data instanceof ArrayBuffer) {
-      // 바이너리 데이터 = 청크
-      // 첫 4바이트: chunkIndex, 다음 4바이트: totalChunks
-      const view = new DataView(event.data)
-      const chunkIndex = view.getUint32(0)
-      const totalChunks = view.getUint32(4)
-      const data = event.data.slice(8)
-
-      receivedChunks.set(chunkIndex, data)
-
-      // 🔥 백프레셔: ACK 기반 흐름 제어 (useDirectFileTransfer 방식)
-      // 연속으로 받은 청크 계산
-      let consecutiveIndex = -1
-      for (let idx = 0; idx <= chunkIndex; idx++) {
-        if (receivedChunks.has(idx)) {
-          consecutiveIndex = idx
-        } else {
-          break
-        }
-      }
-
-      // ACK_WINDOW개마다 또는 연속 인덱스가 갱신될 때 ACK 전송
-      const shouldSendAck =
-        receivedChunks.size % ACK_WINDOW === 0 ||
-        consecutiveIndex > lastAckedIndex
-
-      if (shouldSendAck && consecutiveIndex > lastAckedIndex) {
-        const ackMsg: SyncChunkAckMessage = {
-          type: 'sync-chunk-ack',
-          upToIndex: consecutiveIndex
-        }
-
-        try {
-          if (dataChannel && dataChannel.readyState === 'open') {
-            dataChannel.send(JSON.stringify(ackMsg))
-            lastAckedIndex = consecutiveIndex
-            console.log(`[InitialSync-ack] ACK 전송: ${consecutiveIndex} (받은: ${receivedChunks.size}/${totalChunks}, 연속=${consecutiveIndex + 1})`)
-          }
-        } catch {
-          // 무시
-        }
-      }
-
-      if ((chunkIndex + 1) % 50 === 0) {
-        console.log(`[InitialSync] 청크 수신: ${receivedChunks.size}/${totalChunks} (${((receivedChunks.size / totalChunks) * 100).toFixed(0)}%)`)
-      }
-
-      // 모든 청크 수신 완료 확인
-      if (receivedChunks.size === totalChunks) {
-        mergeAndApplySnapshot(totalChunks)
-      }
-    } else if (typeof event.data === 'string') {
-      try {
-        const msg: DataChannelMessage = JSON.parse(event.data)
-
-        switch (msg.type) {
-          case 'sync-complete':
-            // 송신자가 완료 신호 보냄 (예비용)
-            if (receivedChunks.size === expectedTotalChunks) {
-              mergeAndApplySnapshot(expectedTotalChunks)
-            }
-            break
-          case 'sync-ack':
-            console.log(`[InitialSync] ACK 수신: ${msg.success ? '성공' : '실패'}`)
-            if (!msg.success) {
-              console.error(`[InitialSync] 수신자 에러: ${msg.message}`)
-            }
-            // ACK 받은 후 잠시 대기 후 cleanup (추가 메시지 처리 여유)
-            if (cleanupTimer) clearTimeout(cleanupTimer)
-            cleanupTimer = setTimeout(() => {
-              cleanup()
-            }, 1000)
-            break
-          case 'sync-chunk-ack':
-            // 송신자는 ackHandler에서 처리하므로 여기서는 무시
-            break
-        }
-      } catch {
-        // 무시
-      }
-    }
-  }
-
-  /**
-   * 스냅샷 병합 및 적용 - 메모리 효율 최적화
-   */
-  function mergeAndApplySnapshot(totalChunks: number) {
-    try {
-      console.log(`[InitialSync] 스냅샷 병합 시작: ${totalChunks}개 청크, 예상크기=${(expectedSnapshotSize / 1024 / 1024).toFixed(2)}MB`)
-
-      // 사전 할당으로 메모리 단편화 방지
-      const merged = new Uint8Array(expectedSnapshotSize)
-      let offset = 0
-      let actualSize = 0
-
-      // 순차적으로 병합 (중간 배열 생성 안함)
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = receivedChunks.get(i)
-        if (!chunk) {
-          throw new Error(`청크 ${i} 누락 (받은: ${receivedChunks.size}/${totalChunks})`)
-        }
-        merged.set(new Uint8Array(chunk), offset)
-        offset += chunk.byteLength
-        actualSize += chunk.byteLength
-      }
-
-      // 실제 크기와 예상 크기가 다르면 조정
-      const finalSnapshot = actualSize === expectedSnapshotSize
-        ? merged
-        : merged.slice(0, actualSize)
-
-      console.log(`[InitialSync] 스냅샷 병합 완료: ${(actualSize / 1024 / 1024).toFixed(2)}MB`)
-
-      // 수신 버퍼 즉시 정리 (메모리 해제)
-      receivedChunks.clear()
-
-      // ACK 전송
-      if (dataChannel && dataChannel.readyState === 'open') {
-        const ack: SyncAckMessage = {
-          type: 'sync-ack',
-          success: true,
-        }
-        dataChannel.send(JSON.stringify(ack))
-      }
-
-      // Promise resolve
-      if (syncResolve) {
-        syncResolve(finalSnapshot)
-        syncResolve = null
-        syncReject = null
-      }
-
-      // ACK 전송 후 잠시 대기 후 cleanup
-      if (cleanupTimer) clearTimeout(cleanupTimer)
-      cleanupTimer = setTimeout(() => {
-        cleanup()
-      }, 500)
-    } catch (error) {
-      console.error('[InitialSync] 스냅샷 병합 실패:', error)
-
-      // ACK 전송 (실패)
-      if (dataChannel && dataChannel.readyState === 'open') {
-        const ack: SyncAckMessage = {
-          type: 'sync-ack',
-          success: false,
-          message: error instanceof Error ? error.message : String(error),
-        }
-        dataChannel.send(JSON.stringify(ack))
-      }
-
-      if (syncReject) {
-        syncReject(error instanceof Error ? error : new Error(String(error)))
-        syncResolve = null
-        syncReject = null
-      }
-
-      // 실패해도 ACK 전송 대기 후 cleanup
-      if (cleanupTimer) clearTimeout(cleanupTimer)
-      cleanupTimer = setTimeout(() => {
-        cleanup()
-      }, 500)
-    }
-  }
-
-  /**
    * 초기 동기화 요청 (새 접속자)
    */
   async function requestInitialSync(): Promise<Uint8Array | null> {
-    console.log('[InitialSync] 초기 동기화 요청 시작')
-    console.log(`[InitialSync] - 내 UUID: ${myUuid.slice(-8)}`)
-    console.log(`[InitialSync] - 토픽: ${syncTopic}`)
+    console.log('[InitialSync] 🔄 Requesting initial sync')
+    console.log(`[InitialSync] - My UUID: ${myUuid.slice(-8)}`)
+    console.log(`[InitialSync] - Topic: ${syncTopic}`)
 
-    // topic 구독
+    // Subscribe to topic
     signaling.subscribe([syncTopic])
     signaling.on(syncTopic, handleSignalingMessage)
 
-    // 🔥 구독이 서버에 전파될 때까지 충분히 대기 (1초)
-    console.log('[InitialSync] 구독 전파 대기 중... (1000ms)')
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    // Wait for subscription to propagate
+    console.log('[InitialSync] ⏳ Waiting for subscription to propagate (1s)...')
+    await sleep(1000)
 
-    // 요청 메시지 발행
+    // Send request
     const request: SyncRequestMessage = {
       messageType: 'sync-request',
       requesterUuid: myUuid,
-      timestamp: Date.now(),
+      timestamp: Date.now()
     }
 
-    console.log('[InitialSync] 📤 요청 메시지 발행:', syncTopic)
+    console.log('[InitialSync] 📤 Publishing request')
     signaling.publish(syncTopic, request as unknown as Record<string, unknown>)
-    console.log('[InitialSync] 응답 대기 중... (타임아웃: 15초)')
+    console.log(`[InitialSync] ⏳ Waiting for response (timeout: ${REQUEST_TIMEOUT}ms)...`)
 
-    // Offer 대기 (15초)
+    // Wait for offer
     return new Promise<Uint8Array | null>((resolve, reject) => {
       syncResolve = resolve
       syncReject = reject
 
       const timeoutId = setTimeout(() => {
         if (syncResolve) {
-          console.warn('[InitialSync] ⏰ Offer 타임아웃 (15초) - 빈 채팅방으로 시작')
-          console.log('[InitialSync] 다른 피어가 없거나 응답하지 않음')
+          console.warn('[InitialSync] ⏰ Request timeout - starting with empty room')
           cleanup()
           resolve(null)
           syncResolve = null
           syncReject = null
         }
-      }, 15000)
+      }, REQUEST_TIMEOUT)
 
-      // resolve/reject 시 타임아웃 취소
+      // Cancel timeout on resolve/reject
       const originalResolve = syncResolve
       const originalReject = syncReject
       syncResolve = (snapshot) => {
@@ -399,304 +1047,120 @@ export function useInitialSync(
    * 동기화 요청 처리 (기존 피어)
    */
   async function handleSyncRequest(request: SyncRequestMessage) {
-    console.log(`[InitialSync] 📥 동기화 요청 수신:`, {
-      from: request.requesterUuid.slice(-8),
-      myUuid: myUuid.slice(-8),
-      isSelf: request.requesterUuid === myUuid,
-      timestamp: new Date(request.timestamp).toISOString()
-    })
+    console.log(`[InitialSync] 📥 Sync request received from ${request.requesterUuid.slice(-8)}`)
 
     if (request.requesterUuid === myUuid) {
-      console.log('[InitialSync] ↩️ 자기 자신의 요청 - 무시 (정상)')
+      console.log('[InitialSync] ↩️ Ignoring own request')
       return
     }
 
-    // 🔥 이미 다른 요청에 응답 중이면 무시 (동시 다중 응답 방지)
-    if (peerConnection || dataChannel) {
-      console.warn(`[InitialSync] ⚠️ 이미 응답 중 - 요청 무시 from ${request.requesterUuid.slice(-8)}`)
-      console.log(`[InitialSync] - PC 상태: ${peerConnection?.connectionState}, DC 상태: ${dataChannel?.readyState}`)
+    // Ignore if already handling a transfer
+    if (webrtcManager || currentSender) {
+      console.warn('[InitialSync] ⚠️ Already handling transfer - ignoring request')
       return
     }
-
-    console.log(`[InitialSync] ✅ 다른 피어의 요청 - 응답 시작`)
 
     try {
-      // 스냅샷 생성
+      // Create snapshot
       const snapshot = Y.encodeStateAsUpdate(doc)
       const snapshotSize = snapshot.byteLength
-      console.log(`[InitialSync] 스냅샷 생성 완료: ${(snapshotSize / 1024).toFixed(2)}KB`)
+
+      console.log(`[InitialSync] 📦 Snapshot created: ${(snapshotSize / 1024).toFixed(2)}KB`)
 
       if (snapshotSize === 0) {
-        console.warn('[InitialSync] ⚠️ 빈 스냅샷 (0 bytes) - 응답하지 않음')
-        console.log('[InitialSync] 힌트: 이 피어도 데이터가 없거나 다른 피어가 응답할 것으로 예상')
+        console.warn('[InitialSync] ⚠️ Empty snapshot - not responding')
         return
       }
 
-      console.log(`[InitialSync] 📦 전송 준비: ${(snapshotSize / 1024 / 1024).toFixed(2)}MB`)
-
       const totalChunks = Math.ceil(snapshotSize / CHUNK_SIZE)
-      console.log(`[InitialSync] - 총 청크: ${totalChunks}개`)
-      console.log(`[InitialSync] - 청크 크기: ${(CHUNK_SIZE / 1024).toFixed(0)}KB`)
+      console.log(`[InitialSync] - Total chunks: ${totalChunks}`)
 
-      // PeerConnection 생성
-      peerConnection = createPeerConnection(request.requesterUuid)
-      console.log(`[InitialSync] PeerConnection 생성 완료`)
+      // Create sender
+      currentSender = new SnapshotSender(snapshot, totalChunks, snapshotSize)
 
-      // DataChannel 생성 (송신자)
-      dataChannel = peerConnection.createDataChannel('initial-sync', {
-        ordered: false, // 순서 보장 안함 - 청크 인덱스로 처리, 패킷 유실 시 블로킹 방지
-        maxPacketLifeTime: 3000,
+      // Create WebRTC connection
+      webrtcManager = new WebRTCManager(signaling, myUuid, request.requesterUuid, syncTopic)
+
+      await webrtcManager.createOfferConnection(async (channel) => {
+        try {
+          if (currentSender) {
+            await currentSender.send(channel)
+            console.log('[InitialSync] ✅ Transfer completed')
+          }
+        } catch (error) {
+          console.error('[InitialSync] ❌ Transfer failed:', error)
+        } finally {
+          setTimeout(() => {
+            cleanup()
+          }, 1000)
+        }
       })
-      console.log(`[InitialSync] DataChannel 생성 완료`)
-
-      dataChannel.onopen = () => {
-        console.log('[InitialSync] 🚀 DataChannel 열림 - 청크 전송 시작')
-        sendSnapshotChunks(snapshot, totalChunks)
-      }
-
-      dataChannel.onmessage = handleDataChannelMessage
-      dataChannel.onclose = () => {
-        console.log('[InitialSync] DataChannel 닫힘')
-        cleanup()
-      }
-
-      // Offer 생성
-      const offer = await peerConnection.createOffer()
-      await peerConnection.setLocalDescription(offer)
-      console.log('[InitialSync] Offer 생성 완료')
-
-      // Offer 전송 (시그널링 서버 경유)
-      const offerMessage: SyncOfferMessage = {
-        messageType: 'sync-offer',
-        senderUuid: myUuid,
-        targetUuid: request.requesterUuid,
-        totalChunks,
-        snapshotSize,
-        sdp: offer,
-        timestamp: Date.now(),
-      }
-
-      console.log(`[InitialSync] 📤 Offer 전송 to ${request.requesterUuid.slice(-8)}`)
-      signaling.publish(syncTopic, offerMessage as unknown as Record<string, unknown>)
-      console.log('[InitialSync] ✅ Offer 발행 완료 - Answer 대기 중...')
-
-      // Answer 대기
-      // handleSyncAnswer에서 처리됨
     } catch (error) {
-      console.error('[InitialSync] ❌ 동기화 응답 실패:', error)
-      console.error('[InitialSync] 에러 상세:', error instanceof Error ? error.message : String(error))
+      console.error('[InitialSync] ❌ Failed to handle sync request:', error)
       cleanup()
     }
-  }
-
-  /**
-   * 청크 전송 (DataChannel 직접 전송) - Blob 스트리밍 방식으로 메모리 효율 개선
-   */
-  async function sendSnapshotChunks(snapshot: Uint8Array, totalChunks: number) {
-    if (!dataChannel || dataChannel.readyState !== 'open') {
-      console.error('[InitialSync] DataChannel이 열리지 않음')
-      return
-    }
-
-    // Blob으로 변환 (스트리밍 준비)
-    const snapshotBlob = new Blob([snapshot.buffer as ArrayBuffer])
-    const snapshotSize = snapshotBlob.size
-    console.log(`[InitialSync] 스냅샷 Blob 생성: ${(snapshotSize / 1024 / 1024).toFixed(2)}MB`)
-
-    // 🔥 백프레셔: ACK 기반 흐름 제어 (useDirectFileTransfer 방식)
-    let confirmedNextChunk = 0 // 수신자가 확인한 다음 청크
-    let lastAckTime = Date.now()
-
-    // ACK 메시지 핸들러 - 순서 보장 안되므로 더 큰 값만 반영
-    const ackHandler = (event: MessageEvent) => {
-      if (typeof event.data === 'string') {
-        try {
-          const msg = JSON.parse(event.data) as DataChannelMessage
-          if (msg.type === 'sync-chunk-ack') {
-            const wasUpdated = msg.upToIndex >= confirmedNextChunk
-            if (wasUpdated) {
-              confirmedNextChunk = msg.upToIndex + 1 // 다음에 보낼 청크
-              lastAckTime = Date.now()
-              console.log(`[InitialSync-ack] ACK: 연속=${msg.upToIndex}, 다음전송=${confirmedNextChunk}`)
-            } else {
-              console.log(`[InitialSync-ack] ACK 무시 (구버전): ${msg.upToIndex} < ${confirmedNextChunk - 1}`)
-            }
-          }
-        } catch {
-          // 무시
-        }
-      }
-    }
-    dataChannel.addEventListener('message', ackHandler)
-
-    try {
-      for (let i = 0; i < totalChunks; i++) {
-        // 🔥 Flow control 1: ACK 기반 백프레셔 (useDirectFileTransfer 방식)
-        const gap = i - confirmedNextChunk
-        if (gap >= ACK_WINDOW) {
-          const waitStart = Date.now()
-          console.log(`[InitialSync-wait] 백프레셔 대기: 전송=${i}, 확인=${confirmedNextChunk}, gap=${gap}`)
-
-          while (i - confirmedNextChunk >= ACK_WINDOW && Date.now() - waitStart < ACK_TIMEOUT) {
-            await new Promise(resolve => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-
-            // 1초마다 상태 로깅
-            if ((Date.now() - waitStart) % 1000 < BUFFER_CHECK_INTERVAL) {
-              console.log(`[InitialSync-wait] 대기중... ${Date.now() - waitStart}ms, confirmed=${confirmedNextChunk}`)
-            }
-          }
-
-          const waitTime = Date.now() - waitStart
-          if (i - confirmedNextChunk < ACK_WINDOW) {
-            console.log(`[InitialSync-resume] 백프레셔 해제: ${waitTime}ms`)
-          } else {
-            console.warn(`[InitialSync-timeout] ACK 타임아웃 - 강제 진행`)
-          }
-        }
-
-        // 🔥 Blob 스트리밍: 필요한 청크만 메모리에 로드
-        const start = i * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, snapshotSize)
-        const chunkBlob = snapshotBlob.slice(start, end)
-        const chunkData = await chunkBlob.arrayBuffer()
-
-        // 헤더 추가: chunkIndex(4) + totalChunks(4) + data
-        const header = new ArrayBuffer(8)
-        const view = new DataView(header)
-        view.setUint32(0, i)
-        view.setUint32(4, totalChunks)
-
-        const message = new Uint8Array(header.byteLength + chunkData.byteLength)
-        message.set(new Uint8Array(header), 0)
-        message.set(new Uint8Array(chunkData), header.byteLength)
-
-        // 🔥 Flow control 2: bufferedAmount 기반 로컬 버퍼 관리
-        if (dataChannel.bufferedAmount > MAX_BUFFER_SIZE) {
-          const bufWaitStart = Date.now()
-          console.log(`[InitialSync-buf] 버퍼 대기: ${(dataChannel.bufferedAmount / 1024 / 1024).toFixed(2)}MB`)
-
-          while (dataChannel.bufferedAmount > BUFFER_LOW_WATERMARK && Date.now() - bufWaitStart < BUFFER_WAIT_TIMEOUT) {
-            await new Promise(resolve => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-          }
-
-          console.log(`[InitialSync-buf] 버퍼 해제: ${Date.now() - bufWaitStart}ms`)
-        }
-
-        // send() 전 버퍼 체크 - 256KB 넘으면 대기
-        while (dataChannel.bufferedAmount > 256 * 1024) {
-          if (dataChannel.readyState !== 'open') {
-            throw new Error(`채널 닫힘 (상태: ${dataChannel.readyState})`)
-          }
-          await new Promise(resolve => setTimeout(resolve, 10))
-        }
-
-        dataChannel.send(message)
-
-        // 🔥 Flow control 3: 매 청크마다 버퍼 체크 (오버플로우 방지)
-        if (dataChannel.bufferedAmount > BUFFER_CRITICAL) {
-          const postWaitStart = Date.now()
-          while (dataChannel.bufferedAmount > BUFFER_LOW_WATERMARK && Date.now() - postWaitStart < 5000) {
-            await new Promise(resolve => setTimeout(resolve, BUFFER_CHECK_INTERVAL))
-          }
-        }
-
-        if ((i + 1) % 50 === 0 || i === totalChunks - 1) {
-          const gap = i - confirmedNextChunk + 1
-          const ackAge = Date.now() - lastAckTime
-          console.log(`[InitialSync] 전송: ${i + 1}/${totalChunks} (${(((i + 1) / totalChunks) * 100).toFixed(0)}%), gap=${gap}, ackAge=${ackAge}ms, buf=${(dataChannel.bufferedAmount / 1024).toFixed(0)}KB`)
-        }
-      }
-    } finally {
-      dataChannel.removeEventListener('message', ackHandler)
-    }
-
-    // 완료 메시지
-    const complete: SyncCompleteMessage = {
-      type: 'sync-complete',
-    }
-    dataChannel.send(JSON.stringify(complete))
-
-    console.log('[InitialSync] 모든 청크 전송 완료')
   }
 
   /**
    * Offer 처리 (수신자)
    */
   async function handleSyncOffer(offer: SyncOfferMessage) {
-    console.log(`[InitialSync] 📥 Offer 수신:`, {
-      from: offer.senderUuid.slice(-8),
-      target: offer.targetUuid.slice(-8),
-      myUuid: myUuid.slice(-8),
-      isForMe: offer.targetUuid === myUuid
-    })
+    console.log(`[InitialSync] 📥 Offer received from ${offer.senderUuid.slice(-8)}`)
 
     if (offer.targetUuid !== myUuid) {
-      console.log(`[InitialSync] ↩️ 다른 피어를 위한 Offer - 무시`)
+      console.log('[InitialSync] ↩️ Ignoring offer for different peer')
       return
     }
 
-    // 🔥 이미 다른 피어로부터 받는 중이면 무시 (첫 번째 응답만 수락)
-    if (isReceiving || peerConnection) {
-      console.warn(`[InitialSync] ⚠️ 이미 수신 중 - Offer 무시 from ${offer.senderUuid.slice(-8)}`)
-      console.log(`[InitialSync] - isReceiving: ${isReceiving}, PC: ${peerConnection?.connectionState}`)
+    // Ignore if already receiving
+    if (webrtcManager || currentReceiver) {
+      console.warn('[InitialSync] ⚠️ Already receiving - ignoring offer')
       return
     }
 
-    isReceiving = true
-
-    console.log(`[InitialSync] ✅ Offer 수락 from ${offer.senderUuid.slice(-8)}`)
-    console.log(`[InitialSync] - 크기: ${(offer.snapshotSize / 1024 / 1024).toFixed(2)}MB`)
-    console.log(`[InitialSync] - 청크: ${offer.totalChunks}개`)
-
-    expectedTotalChunks = offer.totalChunks
-    expectedSnapshotSize = offer.snapshotSize
+    console.log('[InitialSync] ✅ Accepting offer')
+    console.log(`[InitialSync] - Size: ${(offer.snapshotSize / 1024).toFixed(2)}KB`)
+    console.log(`[InitialSync] - Chunks: ${offer.totalChunks}`)
 
     try {
-      // PeerConnection 생성
-      peerConnection = createPeerConnection(offer.senderUuid)
+      // Create receiver
+      currentReceiver = new SnapshotReceiver()
 
-      // DataChannel 핸들러 (수신자)
-      peerConnection.ondatachannel = (event) => {
-        dataChannel = event.channel
-        console.log('[InitialSync] DataChannel 수신')
+      // Create WebRTC connection
+      webrtcManager = new WebRTCManager(signaling, myUuid, offer.senderUuid, syncTopic)
 
-        dataChannel.onopen = () => {
-          console.log('[InitialSync] DataChannel 열림 - 수신 대기')
+      await webrtcManager.createAnswerConnection(offer, async (channel) => {
+        try {
+          if (currentReceiver) {
+            const snapshot = await currentReceiver.receive(channel)
+            console.log('[InitialSync] ✅ Snapshot received successfully')
+
+            if (syncResolve) {
+              syncResolve(snapshot)
+              syncResolve = null
+              syncReject = null
+            }
+          }
+        } catch (error) {
+          console.error('[InitialSync] ❌ Receive failed:', error)
+          if (syncReject) {
+            syncReject(error instanceof Error ? error : new Error(String(error)))
+            syncResolve = null
+            syncReject = null
+          }
+        } finally {
+          setTimeout(() => {
+            cleanup()
+          }, 1000)
         }
-
-        dataChannel.onmessage = handleDataChannelMessage
-        dataChannel.onclose = () => {
-          console.log('[InitialSync] DataChannel 닫힘')
-          cleanup()
-        }
-      }
-
-      // Remote description 설정
-      await peerConnection.setRemoteDescription(offer.sdp)
-
-      // Answer 생성
-      const answer = await peerConnection.createAnswer()
-      await peerConnection.setLocalDescription(answer)
-
-      // Answer 전송 (시그널링 서버 경유)
-      const answerMessage: SyncAnswerMessage = {
-        messageType: 'sync-answer',
-        receiverUuid: myUuid,
-        targetUuid: offer.senderUuid,
-        sdp: answer,
-        timestamp: Date.now(),
-      }
-
-      signaling.publish(syncTopic, answerMessage as unknown as Record<string, unknown>)
-      console.log('[InitialSync] Answer 전송')
-
-      // 대기 중인 ICE candidate 추가
-      pendingIceCandidates.forEach((candidate) => {
-        peerConnection?.addIceCandidate(candidate).catch(console.error)
       })
-      pendingIceCandidates.length = 0
     } catch (error) {
-      console.error('[InitialSync] Offer 처리 실패:', error)
+      console.error('[InitialSync] ❌ Failed to handle offer:', error)
+      if (syncReject) {
+        syncReject(error instanceof Error ? error : new Error(String(error)))
+        syncResolve = null
+        syncReject = null
+      }
       cleanup()
     }
   }
@@ -705,41 +1169,25 @@ export function useInitialSync(
    * Answer 처리 (송신자)
    */
   async function handleSyncAnswer(answer: SyncAnswerMessage) {
-    console.log(`[InitialSync] 📥 Answer 수신:`, {
-      from: answer.receiverUuid.slice(-8),
-      target: answer.targetUuid.slice(-8),
-      myUuid: myUuid.slice(-8),
-      isForMe: answer.targetUuid === myUuid
-    })
+    console.log(`[InitialSync] 📥 Answer received from ${answer.receiverUuid.slice(-8)}`)
 
     if (answer.targetUuid !== myUuid) {
-      console.log(`[InitialSync] ↩️ 다른 피어를 위한 Answer - 무시`)
+      console.log('[InitialSync] ↩️ Ignoring answer for different peer')
       return
     }
 
-    console.log(`[InitialSync] ✅ Answer 처리 시작 from ${answer.receiverUuid.slice(-8)}`)
+    if (!webrtcManager) {
+      console.warn('[InitialSync] ⚠️ No WebRTC manager - ignoring answer')
+      return
+    }
+
+    console.log('[InitialSync] ✅ Processing answer')
 
     try {
-      if (peerConnection) {
-        await peerConnection.setRemoteDescription(answer.sdp)
-        console.log('[InitialSync] Remote description 설정 완료')
-
-        // 대기 중인 ICE candidate 추가
-        if (pendingIceCandidates.length > 0) {
-          console.log(`[InitialSync] 대기 중이던 ICE candidate ${pendingIceCandidates.length}개 추가`)
-          pendingIceCandidates.forEach((candidate) => {
-            peerConnection?.addIceCandidate(candidate).catch(console.error)
-          })
-          pendingIceCandidates.length = 0
-        }
-
-        console.log('[InitialSync] ✅ Answer 처리 완료 - DataChannel 연결 대기 중...')
-      } else {
-        console.warn('[InitialSync] ⚠️ PeerConnection이 없음 - Answer 처리 불가')
-      }
+      await webrtcManager.handleAnswer(answer)
+      console.log('[InitialSync] ✅ Answer processed successfully')
     } catch (error) {
-      console.error('[InitialSync] ❌ Answer 처리 실패:', error)
-      console.error('[InitialSync] 에러 상세:', error instanceof Error ? error.message : String(error))
+      console.error('[InitialSync] ❌ Failed to process answer:', error)
     }
   }
 
@@ -749,10 +1197,8 @@ export function useInitialSync(
   function handleSyncIce(ice: SyncIceMessage) {
     if (ice.toUuid !== myUuid) return
 
-    if (peerConnection && peerConnection.remoteDescription) {
-      peerConnection.addIceCandidate(ice.candidate).catch(console.error)
-    } else {
-      pendingIceCandidates.push(ice.candidate)
+    if (webrtcManager) {
+      webrtcManager.handleIceCandidate(ice.candidate)
     }
   }
 
@@ -760,38 +1206,29 @@ export function useInitialSync(
    * 정리 (연결만 정리, 리스너는 유지)
    */
   function cleanup() {
-    console.log('[InitialSync] cleanup 호출 - 연결만 정리')
+    console.log('[InitialSync] 🧹 Cleaning up connections')
 
-    if (cleanupTimer) {
-      clearTimeout(cleanupTimer)
-      cleanupTimer = null
+    if (currentSender) {
+      currentSender.abort()
+      currentSender = null
     }
 
-    if (dataChannel) {
-      if (dataChannel.readyState === 'open') {
-        dataChannel.close()
-      }
-      dataChannel = null
+    if (currentReceiver) {
+      currentReceiver.abort()
+      currentReceiver = null
     }
 
-    if (peerConnection) {
-      peerConnection.close()
-      peerConnection = null
+    if (webrtcManager) {
+      webrtcManager.cleanup()
+      webrtcManager = null
     }
-
-    receivedChunks.clear()
-    expectedTotalChunks = 0
-    expectedSnapshotSize = 0
-    lastAckedIndex = -1
-    pendingIceCandidates.length = 0
-    isReceiving = false
   }
 
   /**
    * 완전 정리 (리스너까지 제거)
    */
   function dispose() {
-    console.log('[InitialSync] dispose 호출 - 리스너 제거')
+    console.log('[InitialSync] 🗑️ Disposing all resources')
     signaling.off(syncTopic, handleSignalingMessage)
     cleanup()
   }
@@ -800,22 +1237,25 @@ export function useInitialSync(
    * 기존 피어로 초기화 (요청 리스너 등록)
    */
   function initializeAsProvider() {
-    console.log('[InitialSync] 📡 기존 피어로 초기화 - 요청 리스너 등록')
-    console.log(`[InitialSync] - 내 UUID: ${myUuid.slice(-8)}`)
-    console.log(`[InitialSync] - 토픽: ${syncTopic}`)
-    console.log(`[InitialSync] - 역할: Provider (새 피어의 요청에 응답 가능)`)
+    console.log('[InitialSync] 📡 Initializing as provider')
+    console.log(`[InitialSync] - My UUID: ${myUuid.slice(-8)}`)
+    console.log(`[InitialSync] - Topic: ${syncTopic}`)
 
-    // topic 구독
+    // Subscribe to topic
     signaling.subscribe([syncTopic])
     signaling.on(syncTopic, handleSignalingMessage)
 
-    console.log('[InitialSync] ✅ 리스너 등록 완료 - 요청 대기 중...')
+    console.log('[InitialSync] ✅ Listener registered - waiting for requests')
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
   }
 
   return {
     requestInitialSync,
     initializeAsProvider,
     cleanup,
-    dispose,
+    dispose
   }
 }
