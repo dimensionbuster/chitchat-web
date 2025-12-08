@@ -594,6 +594,64 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     return disabledUsers.value.has(userId)
   }
 
+  /**
+   * 특정 사용자의 재생목록 삭제
+   */
+  function deleteUserQueue(userId: string) {
+    userQueuesMap.delete(userId)
+    disabledUsersMap.delete(userId)
+    console.log(`[WatchPartyQueue] Deleted user queue: ${userId}`)
+  }
+
+  /**
+   * 내 재생목록을 JSON 파일로 내보내기
+   */
+  function exportMyPlaylist(): string {
+    const myQueue = userQueuesMap.get(currentUserId) || []
+    const data = {
+      version: 1,
+      exportedAt: Date.now(),
+      userId: currentUserId,
+      userName: currentUserName,
+      playlist: myQueue.map(item => ({
+        videoId: item.videoId,
+        addedAt: item.addedAt,
+      })),
+    }
+    return JSON.stringify(data, null, 2)
+  }
+
+  /**
+   * JSON 파일에서 재생목록 가져오기
+   * @param jsonString JSON 문자열
+   * @param append true면 기존 목록에 추가, false면 대체
+   */
+  function importPlaylist(jsonString: string, append: boolean = true): boolean {
+    try {
+      const data = JSON.parse(jsonString)
+
+      if (!data.playlist || !Array.isArray(data.playlist)) {
+        console.error('[WatchPartyQueue] Invalid playlist format')
+        return false
+      }
+
+      const myQueue = append ? (userQueuesMap.get(currentUserId) || []) : []
+
+      const newItems: QueueItem[] = data.playlist.map((item: { videoId: string; addedAt?: number }) => ({
+        videoId: item.videoId,
+        addedBy: currentUserId,
+        addedAt: item.addedAt || Date.now(),
+      }))
+
+      userQueuesMap.set(currentUserId, [...myQueue, ...newItems])
+      console.log(`[WatchPartyQueue] Imported ${newItems.length} video(s)`)
+      return true
+    } catch (error) {
+      console.error('[WatchPartyQueue] Failed to import playlist:', error)
+      return false
+    }
+  }
+
   return {
     // 상태
     userQueues,
@@ -626,5 +684,8 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     seekTo,
     toggleUserPlaylist,
     isUserDisabled,
+    deleteUserQueue,
+    exportMyPlaylist,
+    importPlaylist,
   }
 }

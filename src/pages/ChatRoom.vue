@@ -47,7 +47,7 @@ const isInitialLoad = ref(true)
 const isSendingMessage = ref(false) // 내가 메시지를 보내는 중인지 추적
 
 // Yjs & File Systems
-const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot, doc } = await useYjs(activeRoomId, me, myName.value)
+const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot } = await useYjs(activeRoomId, me, myName.value)
 
 // 글로벌 큐 매니저 초기화
 const { setProvider } = useGlobalDataChannelQueue({

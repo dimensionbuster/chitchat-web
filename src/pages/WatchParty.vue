@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useWatchPartyQueue } from '@/composables/useWatchPartyQueue'
 import { useYouTubePlaylist, extractYouTubeVideoId, fetchMultipleVideoMetadata, type VideoMetadata } from '@/composables/useYouTubePlaylist'
 import { useStyleSettings } from '@/composables/useStyleSettings'
+import { showConfirm } from '@/composables/useCustomDialog'
 import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from 'y-indexeddb'
@@ -409,6 +410,81 @@ function handleMoveToNextMyTurn() {
   hideContextMenu()
 }
 
+// 사용자 재생목록 삭제
+async function handleDeleteUserQueue(userId: string) {
+  if (!queue.value) return
+
+  const userName = queue.value.userNames.get(userId) || userId.replace('user-', '').slice(0, 8)
+  const queueLength = queue.value.userQueues.get(userId)?.length || 0
+
+  const confirmed = await showConfirm(
+    `⚠️ "${userName}"의 재생목록(${queueLength}개)을 완전히 삭제합니다.\n\n이 작업은 취소할 수 없습니다. 계속하시겠습니까?`
+  )
+
+  if (confirmed) {
+    queue.value.deleteUserQueue(userId)
+    console.log(`[WatchParty] Deleted queue for user: ${userId}`)
+  }
+}
+
+// 재생목록 내보내기
+function handleExportPlaylist() {
+  if (!queue.value) return
+
+  try {
+    const jsonData = queue.value.exportMyPlaylist()
+    const blob = new Blob([jsonData], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)
+    a.download = `watchparty-playlist-${timestamp}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    console.log('[WatchParty] Playlist exported')
+  } catch (error) {
+    console.error('[WatchParty] Failed to export playlist:', error)
+    alert('재생목록 내보내기에 실패했습니다')
+  }
+}
+
+// 재생목록 가져오기
+function handleImportPlaylist() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json'
+  input.onchange = async (e) => {
+    const file = (e.target as HTMLInputElement).files?.[0]
+    if (!file || !queue.value) return
+
+    try {
+      const text = await file.text()
+      const success = queue.value.importPlaylist(text, true) // append mode
+
+      if (success) {
+        console.log('[WatchParty] Playlist imported')
+        // 현재 재생 중인 영상이 없을 때만 자동 재생 시작
+        const wasEmpty = !queue.value.currentVideoId
+        if (wasEmpty) {
+          setTimeout(() => {
+            if (queue.value && !queue.value.currentVideoId) {
+              queue.value.playFirst()
+            }
+          }, 100)
+        }
+      } else {
+        alert('유효하지 않은 재생목록 파일입니다')
+      }
+    } catch (error) {
+      console.error('[WatchParty] Failed to import playlist:', error)
+      alert('재생목록 가져오기에 실패했습니다')
+    }
+  }
+  input.click()
+}
+
 // 메타데이터 로드
 async function loadMetadata(videoIds: string[]) {
   const unknownIds = videoIds.filter(id => !videoMetadataCache.value.has(id))
@@ -580,7 +656,11 @@ onUnmounted(() => {
       <div class="playlist-section" :style="{ width: `${playlistWidth}px` }">
         <div class="playlist-header">
           <h3>재생 목록</h3>
-          <button @click="showAddDialog = true" class="add-btn">+ 추가</button>
+          <div class="header-buttons">
+            <button @click="handleImportPlaylist" class="import-btn" title="재생목록 가져오기">📥</button>
+            <button @click="handleExportPlaylist" class="export-btn" title="재생목록 내보내기">📤</button>
+            <button @click="showAddDialog = true" class="add-btn">+ 추가</button>
+          </div>
         </div>
 
         <div class="queues-container">
@@ -695,6 +775,13 @@ onUnmounted(() => {
                   <span class="queue-count">({{ queue?.userQueues.get(userId)?.length || 0 }})</span>
                 </span>
               </label>
+              <button
+                @click="handleDeleteUserQueue(userId)"
+                class="delete-user-btn"
+                title="이 사용자의 재생목록 삭제"
+              >
+                🗑️
+              </button>
             </div>
             <div v-if="!queue?.allUsers || queue.allUsers.length === 0" class="no-users">
               아직 대기열이 없습니다
@@ -1007,7 +1094,15 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.add-btn {
+.header-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.add-btn,
+.import-btn,
+.export-btn {
   padding: 6px 12px;
   background: var(--wp-accent-primary);
   color: var(--wp-text-primary);
@@ -1015,11 +1110,20 @@ onUnmounted(() => {
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
-  transition: opacity 0.2s;
+  transition: all 0.2s;
 }
 
-.add-btn:hover {
+.import-btn,
+.export-btn {
+  padding: 6px 10px;
+  font-size: 16px;
+}
+
+.add-btn:hover,
+.import-btn:hover,
+.export-btn:hover {
   opacity: 0.9;
+  transform: scale(1.05);
 }
 
 .my-queue {
@@ -1406,6 +1510,7 @@ onUnmounted(() => {
 .user-toggle {
   display: flex;
   align-items: center;
+  gap: 6px;
 }
 
 .toggle-label {
@@ -1416,11 +1521,28 @@ onUnmounted(() => {
   padding: 6px 8px;
   border-radius: 4px;
   transition: background 0.2s;
-  width: 100%;
+  flex: 1;
 }
 
 .toggle-label:hover {
   background: var(--wp-bg-hover);
+}
+
+.delete-user-btn {
+  padding: 4px 8px;
+  background: #e74c3c;
+  color: var(--wp-text-primary);
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.delete-user-btn:hover {
+  opacity: 0.8;
+  transform: scale(1.05);
 }
 
 .toggle-checkbox {
