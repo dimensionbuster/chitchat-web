@@ -80,14 +80,14 @@ const goChat = async () => {
 
 const checkForUpdates = async () => {
   if (!window.electronApi) return
-  
+
   isCheckingUpdate.value = true
   updateCheckMessage.value = ''
-  
+
   try {
     const result = await window.electronApi.checkForUpdates()
     updateCheckMessage.value = result.message
-    
+
     // 3초 후 메시지 제거
     setTimeout(() => {
       updateCheckMessage.value = ''
@@ -103,7 +103,7 @@ const checkForUpdates = async () => {
 onMounted(async () => {
   // 로컬 프로필 로드
   await initializeProfilePictures()
-  
+
   // 앱 버전 가져오기
   if (window.electronApi) {
     try {
@@ -177,9 +177,9 @@ onMounted(async () => {
             </svg>
             <span>설정</span>
           </button>
-          
-          <button 
-            @click="checkForUpdates" 
+
+          <button
+            @click="checkForUpdates"
             class="update-button"
             :disabled="isCheckingUpdate"
           >
@@ -188,11 +188,11 @@ onMounted(async () => {
             </svg>
             <span>{{ isCheckingUpdate ? '확인 중...' : '업데이트 확인' }}</span>
           </button>
-          
+
           <div v-if="updateCheckMessage" class="update-message">
             {{ updateCheckMessage }}
           </div>
-          
+
           <div v-if="appVersion" class="version-info">
             v{{ appVersion }}
           </div>
