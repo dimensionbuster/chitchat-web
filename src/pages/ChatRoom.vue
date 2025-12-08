@@ -707,7 +707,7 @@ const handleImportSnapshot = async () => {
 }
 
 .modal-content {
-  background: var(--bg-modal);
+  background: var(--bg-primary);
   border-radius: var(--radius-xl);
   padding: var(--spacing-xl);
   max-width: 400px;

@@ -15,6 +15,8 @@ const name = ref(localStorage.getItem('name') || '')
 const appVersion = ref('')
 const updateCheckMessage = ref('')
 const isCheckingUpdate = ref(false)
+const updateAvailable = ref(false)
+const releaseUrl = ref<string | null>(null)
 
 if (!localStorage.getItem('uuid')) {
   localStorage.setItem('uuid', crypto.randomUUID())
@@ -83,20 +85,32 @@ const checkForUpdates = async () => {
 
   isCheckingUpdate.value = true
   updateCheckMessage.value = ''
+  updateAvailable.value = false
+  releaseUrl.value = null
 
   try {
     const result = await window.electronApi.checkForUpdates()
     updateCheckMessage.value = result.message
+    updateAvailable.value = result.available
+    releaseUrl.value = result.releaseUrl || null
 
-    // 3초 후 메시지 제거
-    setTimeout(() => {
-      updateCheckMessage.value = ''
-    }, 3000)
+    // 업데이트가 없으면 3초 후 메시지 제거
+    if (!result.available) {
+      setTimeout(() => {
+        updateCheckMessage.value = ''
+      }, 3000)
+    }
   } catch (error) {
     console.error('Failed to check for updates:', error)
     updateCheckMessage.value = '업데이트 확인 실패'
   } finally {
     isCheckingUpdate.value = false
+  }
+}
+
+const openReleaseUrl = () => {
+  if (releaseUrl.value && window.electronApi) {
+    window.electronApi.openExternal(releaseUrl.value)
   }
 }
 
@@ -189,8 +203,15 @@ onMounted(async () => {
             <span>{{ isCheckingUpdate ? '확인 중...' : '업데이트 확인' }}</span>
           </button>
 
-          <div v-if="updateCheckMessage" class="update-message">
+          <div v-if="updateCheckMessage" class="update-message" :class="{ 'has-update': updateAvailable }">
             {{ updateCheckMessage }}
+            <button
+              v-if="updateAvailable && releaseUrl"
+              @click="openReleaseUrl"
+              class="download-button"
+            >
+              다운로드 페이지 열기
+            </button>
           </div>
 
           <div v-if="appVersion" class="version-info">
@@ -449,11 +470,43 @@ onMounted(async () => {
   margin-top: var(--spacing-sm);
   padding: var(--spacing-sm);
   background: var(--color-primary-light);
-  color: var(--color-primary);
+  color: var(--text-primary);
   border-radius: var(--radius-sm);
   font-size: var(--font-size-xs);
   text-align: center;
   animation: fadeIn 0.3s ease-in;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.update-message.has-update {
+  background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+  color: white;
+  font-weight: var(--font-weight-semibold);
+}
+
+.download-button {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: white;
+  color: #4CAF50;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.download-button:hover {
+  background: #f5f5f5;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.download-button:active {
+  transform: translateY(0);
 }
 
 @keyframes fadeIn {

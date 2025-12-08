@@ -38,7 +38,13 @@ export interface ElectronApi {
   setNotificationEnabled: (enabled: boolean) => Promise<void>
   getNotificationEnabled: () => Promise<boolean>
   // 업데이트 API
-  checkForUpdates: () => Promise<{ available: boolean; message: string }>
+  checkForUpdates: () => Promise<{
+    available: boolean
+    message: string
+    currentVersion: string
+    latestVersion: string | null
+    releaseUrl: string | null
+  }>
   getAppVersion: () => Promise<string>
 }
 
