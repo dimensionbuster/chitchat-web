@@ -1,4 +1,4 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import * as Y from 'yjs'
 import type { WebrtcProvider } from 'y-webrtc'
 import type { QueueItem } from './useYouTubePlaylist'
@@ -116,101 +116,240 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     return users.sort() // 일관된 순서를 위해 정렬
   })
 
-  // 이전 활성 사용자 목록 (변경 감지용)
-  const previousActiveUserIds = ref<Set<string>>(new Set())
-
-  // 안정적인 사용자 순서 유지 (재생 중인 사용자 기준)
+  // 안정적인 사용자 순서 유지 (재생 순서 보장)
+  // 이 배열은 사용자가 활성화된 순서를 기록하며, computed가 아닌 ref로 관리
   const stableUserOrder = ref<string[]>([])
+
+  // 이전 활성 사용자 Set (변경 감지용)
+  const previousActiveUserSet = ref<Set<string>>(new Set())
+
+  // 각 사용자별 시작 라운드 (활성화된 시점의 itemIndex)
+  // 새로 활성화된 사용자는 다음 라운드부터 참여
+  const userStartRound = ref<Map<string, number>>(new Map())
+
+  /**
+   * 현재 활성화 가능한 사용자 Set 계산
+   * (큐가 있고 비활성화되지 않은 사용자)
+   */
+  const currentActiveUserSet = computed(() => {
+    return new Set(
+      allUsers.value.filter(userId => !disabledUsers.value.has(userId))
+    )
+  })
+
+  /**
+   * stableUserOrder 업데이트 함수
+   * activeUsers computed의 side effect를 제거하고 명시적으로 호출
+   */
+  function updateStableUserOrder() {
+    const currentSet = currentActiveUserSet.value
+    const prevSet = previousActiveUserSet.value
+
+    // 새로 추가된 사용자 (이전에 없었거나 비활성화되어 있었음)
+    const newlyActivated: string[] = []
+    for (const userId of currentSet) {
+      if (!prevSet.has(userId)) {
+        newlyActivated.push(userId)
+      }
+    }
+
+    // 비활성화된 사용자 (이전에는 있었는데 현재 없음)
+    const deactivated: string[] = []
+    for (const userId of prevSet) {
+      if (!currentSet.has(userId)) {
+        deactivated.push(userId)
+      }
+    }
+
+    // 변경이 없으면 업데이트하지 않음
+    if (newlyActivated.length === 0 && deactivated.length === 0) {
+      return
+    }
+
+    // stableUserOrder 업데이트
+    let newOrder = [...stableUserOrder.value]
+
+    // 1. 비활성화된 사용자 제거
+    if (deactivated.length > 0) {
+      newOrder = newOrder.filter(userId => !deactivated.includes(userId))
+      // 시작 라운드 정보도 제거
+      deactivated.forEach(userId => userStartRound.value.delete(userId))
+      console.log(`[WatchPartyQueue] Removed users from order:`, deactivated)
+
+      // 현재 재생 중인 사용자가 비활성화되었으면 다음 곡으로 넘어가기
+      if (currentPlayingUserId.value && deactivated.includes(currentPlayingUserId.value)) {
+        console.log(`[WatchPartyQueue] Current playing user disabled, will skip to next`)
+        // 다음 틱에서 playNext 호출 (현재 상태 업데이트 완료 후)
+        setTimeout(() => {
+          const users = stableUserOrder.value.filter(uid => currentActiveUserSet.value.has(uid))
+          if (users.length > 0) {
+            // 다음 사용자의 영상으로 이동
+            const nextUserId = users[0]!
+            const queue = userQueues.value.get(nextUserId)
+            if (queue?.length) {
+              const startRound = userStartRound.value.get(nextUserId) || 0
+              const effectiveItemIdx = Math.max(0, currentItemIndex.value - startRound)
+              const actualItemIdx = effectiveItemIdx % queue.length
+              const nextItem = queue[actualItemIdx]!
+
+              playbackStateMap.set('videoId', nextItem.videoId)
+              playbackStateMap.set('playingUserId', nextUserId)
+              playbackStateMap.set('videoQueueIndex', actualItemIdx)
+              playbackStateMap.set('userIndex', 0)
+              // itemIndex는 유지 (라운드 유지)
+              playbackStateMap.set('currentTime', 0)
+              playbackStateMap.set('isPlaying', true)
+              playbackStateMap.set('lastUpdate', Date.now())
+              console.log(`[WatchPartyQueue] Skipped to next user: ${nextUserId}`)
+            }
+          }
+        }, 0)
+      }
+    }
+
+    // 2. 새로 활성화된 사용자를 맨 뒤에 추가 (라운드로빈의 마지막)
+    if (newlyActivated.length > 0) {
+      // 정렬하여 일관된 순서 보장
+      newlyActivated.sort()
+      newOrder = [...newOrder, ...newlyActivated]
+
+      // 새로 활성화된 사용자의 시작 라운드 설정
+      // 현재 라운드(currentItemIndex)부터 참여하되, activeUsers 순서에서 맨 뒤이므로
+      // 같은 라운드 내에서도 기존 사용자들 뒤에 배치됨
+      const currentRound = currentItemIndex.value
+      newlyActivated.forEach(userId => {
+        userStartRound.value.set(userId, currentRound)
+        console.log(`[WatchPartyQueue] User ${userId} will start from round ${currentRound}`)
+      })
+      console.log(`[WatchPartyQueue] Added users to order:`, newlyActivated)
+    }
+
+    // 3. 여전히 활성화된 사용자만 필터링 (안전장치)
+    newOrder = newOrder.filter(userId => currentSet.has(userId))
+
+    // 상태 업데이트
+    stableUserOrder.value = newOrder
+    previousActiveUserSet.value = new Set(currentSet)
+    console.log(`[WatchPartyQueue] Updated stableUserOrder:`, newOrder)
+  }
+
+  // currentActiveUserSet이 변경될 때 stableUserOrder 업데이트
+  // (disabledUsers 또는 allUsers 변경 시 자동으로 트리거됨)
+  watch(
+    currentActiveUserSet,
+    () => {
+      updateStableUserOrder()
+    },
+    { immediate: false }
+  )
 
   /**
    * 활성 사용자 목록 (대기열이 있고 비활성화되지 않은 사용자만)
-   * 기존 순서를 유지하되, 새로 추가되는 사용자는 맨 뒤에 배치
+   *
+   * 핵심 로직:
+   * - 기존에 활성화되어 있던 사용자는 기존 순서 유지
+   * - 새로 활성화된 사용자는 **맨 뒤에 추가** (라운드로빈의 마지막)
+   * - 비활성화된 사용자는 목록에서 제거되고, 다시 활성화되면 맨 뒤에 추가
    */
   const activeUsers = computed(() => {
-    const currentActive = new Set(
-      allUsers.value.filter(userId => !disabledUsers.value.has(userId))
-    )
-
-    // 기존 순서에서 여전히 활성화된 사용자만 필터링
-    const existing = stableUserOrder.value.filter(userId => currentActive.has(userId))
-    const existingSet = new Set(existing)
-
-    // 새로 추가된 사용자 찾기 (기존 순서에 없는 사용자만)
-    const newUsers = Array.from(currentActive).filter(
-      userId => !existingSet.has(userId)
-    )
-
-    // 기존 사용자 + 새로운 사용자 (맨 뒤)
-    const result = [...existing, ...newUsers.sort()]
-
-    // 상태 업데이트
-    previousActiveUserIds.value = currentActive
-    stableUserOrder.value = result
-
-    return result
+    // stableUserOrder에서 현재 활성화된 사용자만 필터링하여 반환
+    // (updateStableUserOrder가 이미 순서를 관리하므로 여기서는 필터링만)
+    const currentSet = currentActiveUserSet.value
+    return stableUserOrder.value.filter(userId => currentSet.has(userId))
   })
 
   /**
    * 현재 위치에서 다음 N개 영상 미리보기 생성 (라운드로빈 무한 반복)
+   *
+   * 핵심 로직:
+   * - 현재 재생 중인 영상은 해당 사용자가 비활성화되어도 계속 표시
+   * - 다음 영상부터는 활성화된 사용자들만 라운드로빈
+   * - 사용자가 다시 활성화되면 activeUsers의 맨 뒤에 추가되어 있으므로
+   *   자연스럽게 라운드로빈 순서의 마지막에 배치됨
    */
   const globalQueue = computed<QueueItem[]>(() => {
     const result: QueueItem[] = []
     const users = activeUsers.value
 
-    if (users.length === 0) return result
-
-    let userIdx = 0
-    let itemIdx = 0
-
-    // 현재 재생 중인 영상이 있는 경우 처리
+    // 현재 재생 중인 영상 처리 (비활성화 여부와 관계없이 표시)
     if (currentVideoId.value && currentPlayingUserId.value) {
       const playingUserId = currentPlayingUserId.value
-      const playingUserIdx = users.indexOf(playingUserId)
+      const currentQueue = userQueues.value.get(playingUserId)
+      const currentItem = findCurrentVideoInQueue(currentQueue)
 
-      // 현재 재생 중인 사용자가 활성화된 경우에만 표시
-      if (playingUserIdx !== -1) {
-        const currentQueue = userQueues.value.get(playingUserId)
-        const currentItem = findCurrentVideoInQueue(currentQueue)
+      if (currentItem) {
+        const userName = userNames.value.get(playingUserId) ||
+                        playingUserId.replace('user-', '').slice(0, 8)
 
-        if (currentItem) {
-          const userName = userNames.value.get(playingUserId) ||
-                          playingUserId.replace('user-', '').slice(0, 8)
-
-          result.push({
-            ...currentItem,
-            addedBy: userName,
-          })
-
-          // activeUsers 순서가 안정적으로 유지되므로 currentUserIndex 사용
-          userIdx = currentUserIndex.value + 1
-          itemIdx = currentItemIndex.value
-
-          if (userIdx >= users.length) {
-            userIdx = 0
-            itemIdx++
-          }
-        }
+        result.push({
+          ...currentItem,
+          addedBy: userName,
+        })
       }
-    }    // 최대 20개까지 생성
+    }
+
+    // 활성 사용자가 없으면 현재 재생 중인 영상만 반환
+    if (users.length === 0) return result
+
+    // 다음 영상들 계산을 위한 시작점 결정
+    // 현재 재생 중인 사용자가 활성 목록에 있으면 그 다음부터, 없으면 첫 번째부터
+    let userIdx: number
+    let itemIdx: number
+
+    if (currentPlayingUserId.value) {
+      const playingUserIdxInActive = users.indexOf(currentPlayingUserId.value)
+
+      if (playingUserIdxInActive !== -1) {
+        // 재생 중인 사용자가 활성 목록에 있음 -> 다음 사용자부터 시작
+        userIdx = playingUserIdxInActive + 1
+        itemIdx = currentItemIndex.value
+
+        if (userIdx >= users.length) {
+          userIdx = 0
+          itemIdx++
+        }
+      } else {
+        // 재생 중인 사용자가 비활성화됨 -> 활성 목록의 첫 번째부터 시작
+        // 현재 라운드(itemIndex)를 유지
+        userIdx = 0
+        itemIdx = currentItemIndex.value
+      }
+    } else {
+      // 재생 중인 영상이 없음 -> 처음부터
+      userIdx = 0
+      itemIdx = 0
+    }
+
+    // 최대 20개까지 생성
     const maxItems = 20
 
     for (let i = result.length; i < maxItems; i++) {
+      if (users.length === 0) break
+
       userIdx = userIdx % users.length
       const userId = users[userIdx]!
       const queue = userQueues.value.get(userId)
 
       // 큐가 있고 비어있지 않은 경우에만 처리
       if (queue?.length) {
-        const actualItemIdx = itemIdx % queue.length
-        const item = queue[actualItemIdx]
+        // 해당 사용자의 시작 라운드 확인
+        const startRound = userStartRound.value.get(userId) || 0
 
-        if (item) {
-          const userName = userNames.value.get(userId) || userId.replace('user-', '').slice(0, 8)
-          result.push({
-            ...item,
-            addedBy: userName,
-          })
+        // 현재 라운드가 시작 라운드보다 크거나 같을 때만 영상 추가
+        if (itemIdx >= startRound) {
+          const effectiveItemIdx = itemIdx - startRound
+          const actualItemIdx = effectiveItemIdx % queue.length
+          const item = queue[actualItemIdx]
+
+          if (item) {
+            const userName = userNames.value.get(userId) || userId.replace('user-', '').slice(0, 8)
+            result.push({
+              ...item,
+              addedBy: userName,
+            })
+          }
         }
+        // 시작 라운드 전이면 이 사용자 건너뛰고 다음 사용자로
       }
 
       // 다음 사용자로 이동
@@ -220,6 +359,20 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
         itemIdx++
       }
     }
+
+    // 디버그 로그: 글로벌 큐 순서 출력
+    console.log(`[WatchPartyQueue] GlobalQueue (${result.length} items):`)
+    console.log(`  activeUsers order: [${users.join(', ')}]`)
+    console.log(`  userStartRounds: ${JSON.stringify(Object.fromEntries(userStartRound.value))}`)
+    console.log(`  currentPlayingUserId: ${currentPlayingUserId.value}`)
+    console.log(`  currentItemIndex: ${currentItemIndex.value}`)
+    result.forEach((item, idx) => {
+      const ownerUserId = Array.from(userQueues.value.entries())
+        .find(([, queue]) => queue.some(q => q.videoId === item.videoId))?.[0] || 'unknown'
+      const ownerName = userNames.value.get(ownerUserId) || ownerUserId.replace('user-', '').slice(0, 8)
+      const startRound = userStartRound.value.get(ownerUserId) || 0
+      console.log(`  ${idx}: ${item.videoId.slice(0, 8)}... by ${ownerName} (startRound: ${startRound})`)
+    })
 
     return result
   })
@@ -270,6 +423,25 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       }
     })
     disabledUsers.value = newDisabled
+
+    // stableUserOrder 초기화 (첫 로드 시)
+    // 이미 초기화된 경우에는 activeUsers computed에서 관리
+    if (stableUserOrder.value.length === 0 && newQueues.size > 0) {
+      const initialUsers: string[] = []
+      newQueues.forEach((queue, userId) => {
+        if (queue.length > 0 && !newDisabled.has(userId)) {
+          initialUsers.push(userId)
+        }
+      })
+      initialUsers.sort() // 일관된 초기 순서
+      stableUserOrder.value = initialUsers
+      previousActiveUserSet.value = new Set(initialUsers)
+      // 초기 사용자들은 라운드 0부터 시작
+      initialUsers.forEach(userId => {
+        userStartRound.value.set(userId, 0)
+      })
+      console.log(`[WatchPartyQueue] Initialized stableUserOrder:`, initialUsers)
+    }
 
     // 재생 상태 동기화
     const videoId = playbackStateMap.get('videoId') as string | null
@@ -427,51 +599,94 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
 
   /**
    * 다음 영상으로 이동 (무한 순환)
+   *
+   * 핵심 로직:
+   * - 현재 재생 중인 사용자가 활성 목록에 있으면, 그 다음 사용자로 이동
+   * - 현재 재생 중인 사용자가 비활성화되었으면, 활성 목록의 첫 번째 사용자로 이동
+   * - 각 사용자의 시작 라운드를 고려하여 아직 참여하지 않은 사용자는 건너뜀
    */
   function playNext() {
     const users = activeUsers.value
 
     // 세이프가드: 빈 사용자 목록
     if (users.length === 0) {
-      console.log(`[WatchPartyQueue] No videos in any queue`)
+      console.log(`[WatchPartyQueue] No active users with videos`)
       return false
     }
 
-    let newUserIndex = currentUserIndex.value + 1
-    let newItemIndex = currentItemIndex.value
+    let newUserIndex: number
+    let newItemIndex: number
 
-    // 한 바퀴 돌았으면 itemIndex 증가
-    if (newUserIndex >= users.length) {
+    // 현재 재생 중인 사용자의 위치 확인
+    const currentPlayingIdx = currentPlayingUserId.value
+      ? users.indexOf(currentPlayingUserId.value)
+      : -1
+
+    if (currentPlayingIdx !== -1) {
+      // 현재 재생 중인 사용자가 활성 목록에 있음
+      // -> 다음 사용자로 이동
+      newUserIndex = currentPlayingIdx + 1
+      newItemIndex = currentItemIndex.value
+
+      if (newUserIndex >= users.length) {
+        newUserIndex = 0
+        newItemIndex++
+      }
+    } else {
+      // 현재 재생 중인 사용자가 비활성화됨
+      // -> 활성 목록의 첫 번째 사용자로 이동 (같은 라운드 유지)
       newUserIndex = 0
-      newItemIndex++
+      newItemIndex = currentItemIndex.value
     }
 
-    const userId = users[newUserIndex]!
-    const queue = userQueues.value.get(userId)
+    // 시작 라운드가 도래하지 않은 사용자는 건너뛰기
+    let attempts = 0
+    const maxAttempts = users.length * 2 // 무한 루프 방지
 
-    // 세이프가드: 빈 큐
-    if (!queue?.length) {
-      console.log(`[WatchPartyQueue] Failed to find next video`)
-      return false
+    while (attempts < maxAttempts) {
+      const userId = users[newUserIndex]!
+      const startRound = userStartRound.value.get(userId) || 0
+
+      if (newItemIndex >= startRound) {
+        // 이 사용자는 참여 가능
+        const queue = userQueues.value.get(userId)
+        if (queue?.length) {
+          const effectiveItemIdx = newItemIndex - startRound
+          const actualItemIdx = effectiveItemIdx % queue.length
+          const nextItem = queue[actualItemIdx]!
+
+          playbackStateMap.set('videoId', nextItem.videoId)
+          playbackStateMap.set('playingUserId', userId)
+          playbackStateMap.set('videoQueueIndex', actualItemIdx)
+          playbackStateMap.set('userIndex', newUserIndex)
+          playbackStateMap.set('itemIndex', newItemIndex)
+          playbackStateMap.set('currentTime', 0)
+          playbackStateMap.set('isPlaying', true)
+          playbackStateMap.set('lastUpdate', Date.now())
+          console.log(`[WatchPartyQueue] Playing next: ${nextItem.videoId} (user: ${userId}, userIdx: ${newUserIndex}, itemIdx: ${newItemIndex}, startRound: ${startRound})`)
+          return true
+        }
+      }
+
+      // 다음 사용자로 이동
+      newUserIndex++
+      if (newUserIndex >= users.length) {
+        newUserIndex = 0
+        newItemIndex++
+      }
+      attempts++
     }
 
-    const actualItemIdx = newItemIndex % queue.length
-    const nextItem = queue[actualItemIdx]!
-
-    playbackStateMap.set('videoId', nextItem.videoId)
-    playbackStateMap.set('playingUserId', userId)
-    playbackStateMap.set('videoQueueIndex', actualItemIdx)
-    playbackStateMap.set('userIndex', newUserIndex)
-    playbackStateMap.set('itemIndex', newItemIndex)
-    playbackStateMap.set('currentTime', 0)
-    playbackStateMap.set('isPlaying', true)
-    playbackStateMap.set('lastUpdate', Date.now())
-    console.log(`[WatchPartyQueue] Playing next: ${nextItem.videoId} (user: ${userId}, item: ${actualItemIdx})`)
-    return true
+    console.log(`[WatchPartyQueue] Failed to find next video`)
+    return false
   }
 
   /**
    * 이전 영상으로 이동 (무한 순환, 처음으로 돌아갈 수 있음)
+   *
+   * 핵심 로직:
+   * - 현재 재생 중인 사용자가 활성 목록에 있으면, 그 이전 사용자로 이동
+   * - 현재 재생 중인 사용자가 비활성화되었으면, 활성 목록의 마지막 사용자로 이동
    */
   function playPrevious() {
     const users = activeUsers.value
@@ -479,39 +694,78 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     // 세이프가드: 빈 사용자 목록
     if (users.length === 0) return false
 
-    let newUserIndex = currentUserIndex.value - 1
-    let newItemIndex = currentItemIndex.value
+    let newUserIndex: number
+    let newItemIndex: number
 
-    // 처음이면 이전 라운드의 마지막 사용자로
-    if (newUserIndex < 0) {
+    // 현재 재생 중인 사용자의 위치 확인
+    const currentPlayingIdx = currentPlayingUserId.value
+      ? users.indexOf(currentPlayingUserId.value)
+      : -1
+
+    if (currentPlayingIdx !== -1) {
+      // 현재 재생 중인 사용자가 활성 목록에 있음
+      newUserIndex = currentPlayingIdx - 1
+      newItemIndex = currentItemIndex.value
+
+      if (newUserIndex < 0) {
+        newUserIndex = users.length - 1
+        newItemIndex = Math.max(0, newItemIndex - 1)
+      }
+    } else {
+      // 현재 재생 중인 사용자가 비활성화됨
+      // -> 활성 목록의 마지막 사용자로 이동 (이전 라운드)
       newUserIndex = users.length - 1
-      newItemIndex = Math.max(0, newItemIndex - 1)
+      newItemIndex = Math.max(0, currentItemIndex.value - 1)
     }
 
-    const userId = users[newUserIndex]!
-    const queue = userQueues.value.get(userId)
+    // 시작 라운드가 도래하지 않은 사용자는 건너뛰기 (역방향)
+    let attempts = 0
+    const maxAttempts = users.length * 2
 
-    // 세이프가드: 빈 큐
-    if (!queue?.length) return false
+    while (attempts < maxAttempts) {
+      const userId = users[newUserIndex]!
+      const startRound = userStartRound.value.get(userId) || 0
 
-    const actualItemIdx = newItemIndex % queue.length
-    const prevItem = queue[actualItemIdx]!
+      if (newItemIndex >= startRound) {
+        const queue = userQueues.value.get(userId)
+        if (queue?.length) {
+          const effectiveItemIdx = newItemIndex - startRound
+          const actualItemIdx = effectiveItemIdx % queue.length
+          const prevItem = queue[actualItemIdx]!
 
-    playbackStateMap.set('videoId', prevItem.videoId)
-    playbackStateMap.set('playingUserId', userId)
-    playbackStateMap.set('videoQueueIndex', actualItemIdx)
-    playbackStateMap.set('userIndex', newUserIndex)
-    playbackStateMap.set('itemIndex', newItemIndex)
-    playbackStateMap.set('currentTime', 0)
-    playbackStateMap.set('isPlaying', true)
-    playbackStateMap.set('lastUpdate', Date.now())
-    console.log(`[WatchPartyQueue] Playing previous: ${prevItem.videoId}`)
-    return true
+          playbackStateMap.set('videoId', prevItem.videoId)
+          playbackStateMap.set('playingUserId', userId)
+          playbackStateMap.set('videoQueueIndex', actualItemIdx)
+          playbackStateMap.set('userIndex', newUserIndex)
+          playbackStateMap.set('itemIndex', newItemIndex)
+          playbackStateMap.set('currentTime', 0)
+          playbackStateMap.set('isPlaying', true)
+          playbackStateMap.set('lastUpdate', Date.now())
+          console.log(`[WatchPartyQueue] Playing previous: ${prevItem.videoId}`)
+          return true
+        }
+      }
+
+      // 이전 사용자로 이동
+      newUserIndex--
+      if (newUserIndex < 0) {
+        newUserIndex = users.length - 1
+        newItemIndex = Math.max(0, newItemIndex - 1)
+      }
+      attempts++
+    }
+
+    return false
   }
 
   /**
    * globalQueue 내에서 특정 인덱스의 영상 재생
    * (UI에서 미리보기 리스트 클릭 시 사용)
+   *
+   * 핵심 로직:
+   * - globalQueue의 offset 위치를 기반으로 실제 재생할 영상 계산
+   * - 현재 재생 중인 사용자의 활성화 상태에 따라 시작점 결정
+   * - 각 사용자의 시작 라운드를 고려
    */
   function playAt(offsetInPreview: number) {
     const users = activeUsers.value
@@ -519,16 +773,53 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     // 세이프가드: 빈 사용자 목록 또는 유효하지 않은 오프셋
     if (users.length === 0 || offsetInPreview < 0) return false
 
-    // 현재 위치에서 offset만큼 이동한 위치 계산
-    let userIdx = currentUserIndex.value
-    let itemIdx = currentItemIndex.value
+    // offset 0은 현재 재생 중인 영상 (변경 없음)
+    if (offsetInPreview === 0 && currentVideoId.value) return true
 
-    for (let i = 0; i < offsetInPreview; i++) {
+    // 시작점 결정
+    let userIdx: number
+    let itemIdx: number
+
+    const currentPlayingIdx = currentPlayingUserId.value
+      ? users.indexOf(currentPlayingUserId.value)
+      : -1
+
+    if (currentPlayingIdx !== -1) {
+      // 현재 재생 중인 사용자가 활성 목록에 있음
+      userIdx = currentPlayingIdx
+      itemIdx = currentItemIndex.value
+    } else {
+      // 현재 재생 중인 사용자가 비활성화됨 또는 재생 중인 영상 없음
+      // offset 1부터 시작해야 하므로 -1에서 시작
+      userIdx = -1
+      itemIdx = currentItemIndex.value
+    }
+
+    // offset만큼 이동 (시작 라운드 고려)
+    let moved = 0
+    let attempts = 0
+    const maxAttempts = users.length * offsetInPreview * 2 // 충분한 시도 횟수
+
+    while (moved < offsetInPreview && attempts < maxAttempts) {
       userIdx++
       if (userIdx >= users.length) {
         userIdx = 0
         itemIdx++
       }
+
+      const userId = users[userIdx]!
+      const startRound = userStartRound.value.get(userId) || 0
+
+      // 시작 라운드가 도래한 사용자만 카운트
+      if (itemIdx >= startRound) {
+        moved++
+      }
+      attempts++
+    }
+
+    if (moved < offsetInPreview) {
+      console.log(`[WatchPartyQueue] Failed to find video at offset ${offsetInPreview}`)
+      return false
     }
 
     const userId = users[userIdx]!
@@ -537,7 +828,9 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     // 세이프가드: 빈 큐
     if (!queue?.length) return false
 
-    const actualItemIdx = itemIdx % queue.length
+    const startRound = userStartRound.value.get(userId) || 0
+    const effectiveItemIdx = itemIdx - startRound
+    const actualItemIdx = effectiveItemIdx % queue.length
     const item = queue[actualItemIdx]!
 
     playbackStateMap.set('videoId', item.videoId)
