@@ -164,26 +164,30 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     // 현재 재생 중인 영상이 있는 경우 처리
     if (currentVideoId.value && currentPlayingUserId.value) {
       const playingUserId = currentPlayingUserId.value
-      // allUsers에서 찾기 (비활성화된 사용자도 포함)
-      const currentQueue = userQueues.value.get(playingUserId)
-      const currentItem = findCurrentVideoInQueue(currentQueue)
+      const playingUserIdx = users.indexOf(playingUserId)
 
-      if (currentItem) {
-        const userName = userNames.value.get(playingUserId) ||
-                        playingUserId.replace('user-', '').slice(0, 8)
+      // 현재 재생 중인 사용자가 활성화된 경우에만 표시
+      if (playingUserIdx !== -1) {
+        const currentQueue = userQueues.value.get(playingUserId)
+        const currentItem = findCurrentVideoInQueue(currentQueue)
 
-        result.push({
-          ...currentItem,
-          addedBy: userName,
-        })
+        if (currentItem) {
+          const userName = userNames.value.get(playingUserId) ||
+                          playingUserId.replace('user-', '').slice(0, 8)
 
-        // activeUsers 순서가 안정적으로 유지되므로 currentUserIndex 사용
-        userIdx = currentUserIndex.value + 1
-        itemIdx = currentItemIndex.value
+          result.push({
+            ...currentItem,
+            addedBy: userName,
+          })
 
-        if (userIdx >= users.length) {
-          userIdx = 0
-          itemIdx++
+          // activeUsers 순서가 안정적으로 유지되므로 currentUserIndex 사용
+          userIdx = currentUserIndex.value + 1
+          itemIdx = currentItemIndex.value
+
+          if (userIdx >= users.length) {
+            userIdx = 0
+            itemIdx++
+          }
         }
       }
     }    // 최대 20개까지 생성
