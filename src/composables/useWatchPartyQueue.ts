@@ -131,13 +131,14 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       allUsers.value.filter(userId => !disabledUsers.value.has(userId))
     )
 
-    // 새로 추가된 사용자 찾기
-    const newUsers = Array.from(currentActive).filter(
-      userId => !previousActiveUserIds.value.has(userId)
-    )
-
     // 기존 순서에서 여전히 활성화된 사용자만 필터링
     const existing = stableUserOrder.value.filter(userId => currentActive.has(userId))
+    const existingSet = new Set(existing)
+
+    // 새로 추가된 사용자 찾기 (기존 순서에 없는 사용자만)
+    const newUsers = Array.from(currentActive).filter(
+      userId => !existingSet.has(userId)
+    )
 
     // 기존 사용자 + 새로운 사용자 (맨 뒤)
     const result = [...existing, ...newUsers.sort()]
