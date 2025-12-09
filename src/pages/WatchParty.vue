@@ -546,11 +546,9 @@ onMounted(async () => {
   // isWatchParty 플래그를 추가하여 접속자 목록에서 필터링
   if (provider) {
     provider.awareness.setLocalStateField('userUuid', uuid)
-    if (currentUserName) {
-      // 채팅방과 동일한 형식으로 닉네임 생성 (닉네임 + UUID 뒷부분)
-      const formattedName = currentUserName.trim() ? `${currentUserName.trim()}${currentUserId.slice(-4)}` : `User ${currentUserId.slice(-4)}`
-      provider.awareness.setLocalStateField('nickname', formattedName)
-    }
+    // 채팅방과 동일한 형식으로 닉네임 생성 (닉네임 + UUID 뒷부분)
+    const formattedName = currentUserName?.trim() ? `${currentUserName.trim()}${currentUserId.slice(-4)}` : `User ${currentUserId.slice(-4)}`
+    provider.awareness.setLocalStateField('nickname', formattedName)
     // WatchParty 피어임을 표시 (접속자 목록에서 제외하기 위함)
     provider.awareness.setLocalStateField('isWatchParty', true)
   }

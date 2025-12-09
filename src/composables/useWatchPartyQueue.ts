@@ -59,12 +59,35 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     syncUserNamesFromAwareness()
   }
 
+  /**
+   * 현재 재생 중인 영상을 큐에서 찾기
+   */
+  const findCurrentVideoInQueue = (queue: QueueItem[] | undefined): QueueItem | null => {
+    if (!queue || queue.length === 0) return null
+    if (currentVideoQueueIndex.value >= queue.length) return null
+
+    let currentItem = queue[currentVideoQueueIndex.value]
+
+    // 큐가 변경되어 인덱스의 영상이 달라진 경우, videoId로 재검색
+    if (currentItem && currentItem.videoId !== currentVideoId.value) {
+      const actualIdx = queue.findIndex(item => item.videoId === currentVideoId.value)
+      if (actualIdx !== -1) {
+        currentItem = queue[actualIdx]
+        playbackStateMap.set('videoQueueIndex', actualIdx)
+      }
+    }
+
+    return currentItem || null
+  }
+
   // 현재 재생 위치 (라운드로빈)
   // userIndex: 현재 사용자 인덱스 (사용자 목록에서)
   // itemIndex: 해당 라운드에서 몇 번째인지 (순환)
   const currentUserIndex = ref(0)
   const currentItemIndex = ref(0)
   const currentVideoId = ref<string | null>(null)
+  const currentPlayingUserId = ref<string | null>(null) // 현재 재생중인 사용자 ID
+  const currentVideoQueueIndex = ref(0) // 현재 재생중인 영상의 해당 사용자 큐 내 인덱스
 
   /**
    * 모든 사용자 목록 (대기열이 있는 사용자 전체 - 비활성화 포함)
@@ -95,56 +118,56 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
 
     if (users.length === 0) return result
 
-    let userIdx = currentUserIndex.value
-    let itemIdx = currentItemIndex.value
+    let userIdx = 0
+    let itemIdx = 0
 
-    // 현재 재생 중인 videoId가 있으면, 해당 영상을 찾아서 시작
-    if (currentVideoId.value) {
-      const currentUserId = users[userIdx % users.length]
-      const currentQueue = userQueues.value.get(currentUserId!)
+    // 현재 재생 중인 영상이 있는 경우 처리
+    const hasCurrentVideo = currentVideoId.value && currentPlayingUserId.value
+    if (hasCurrentVideo) {
+      const playingUserId = currentPlayingUserId.value!
+      const playingUserIdx = users.indexOf(playingUserId)
+      const isUserActive = playingUserIdx !== -1
 
-      if (currentQueue && currentQueue.length > 0) {
-        // 현재 큐에서 currentVideoId를 찾기
-        const actualIdx = currentQueue.findIndex(item => item.videoId === currentVideoId.value)
+      if (isUserActive) {
+        const currentQueue = userQueues.value.get(playingUserId)
+        const currentItem = findCurrentVideoInQueue(currentQueue)
 
-        if (actualIdx !== -1) {
-          // 찾았으면 그 인덱스로 시작
-          const currentItem = currentQueue[actualIdx]!
-          const userName = userNames.value.get(currentUserId!) || currentUserId!.replace('user-', '').slice(0, 8)
+        if (currentItem) {
+          const userName = userNames.value.get(playingUserId) ||
+                          playingUserId.replace('user-', '').slice(0, 8)
+
           result.push({
             ...currentItem,
             addedBy: userName,
           })
 
-          // 다음부터는 기존 로직으로 계속
-          userIdx++
+          // 다음 사용자부터 시작하도록 설정
+          userIdx = playingUserIdx + 1
+          itemIdx = currentVideoQueueIndex.value
+
           if (userIdx >= users.length) {
             userIdx = 0
             itemIdx++
           }
         }
       }
-    }
-
-    // 최대 20개까지 생성
+    }    // 최대 20개까지 생성
     const maxItems = 20
 
     for (let i = result.length; i < maxItems; i++) {
-      // 유효한 사용자 인덱스로 조정
       userIdx = userIdx % users.length
+      const userId = users[userIdx]!
+      const queue = userQueues.value.get(userId)
 
-      const userId = users[userIdx]
-      const queue = userQueues.value.get(userId!)
-      if (queue && queue.length > 0) {
-        // 순환 인덱스로 아이템 가져오기
+      // 큐가 있고 비어있지 않은 경우에만 처리
+      if (queue?.length) {
         const actualItemIdx = itemIdx % queue.length
         const item = queue[actualItemIdx]
+
         if (item) {
-          // 사용자 이름 가져오기 (없으면 userId 사용)
-          const userName = userNames.value.get(userId!) || userId!.replace('user-', '').slice(0, 8)
+          const userName = userNames.value.get(userId) || userId.replace('user-', '').slice(0, 8)
           result.push({
             ...item,
-            // 추가 정보: 누구의 큐에서 왔는지 (이름으로 표시)
             addedBy: userName,
           })
         }
@@ -152,8 +175,6 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
 
       // 다음 사용자로 이동
       userIdx++
-
-      // 한 바퀴 돌았으면 itemIndex 증가
       if (userIdx >= users.length) {
         userIdx = 0
         itemIdx++
@@ -212,12 +233,16 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
 
     // 재생 상태 동기화
     const videoId = playbackStateMap.get('videoId') as string | null
+    const playingUserId = playbackStateMap.get('playingUserId') as string | null | undefined
+    const videoQueueIdx = playbackStateMap.get('videoQueueIndex') as number | undefined
     const userIdx = playbackStateMap.get('userIndex') as number | undefined
     const itemIdx = playbackStateMap.get('itemIndex') as number | undefined
     const playing = playbackStateMap.get('isPlaying') as boolean | undefined
     const time = playbackStateMap.get('currentTime') as number | undefined
 
     if (videoId !== undefined) currentVideoId.value = videoId
+    if (playingUserId !== undefined) currentPlayingUserId.value = playingUserId
+    if (videoQueueIdx !== undefined) currentVideoQueueIndex.value = videoQueueIdx
     if (userIdx !== undefined) currentUserIndex.value = userIdx
     if (itemIdx !== undefined) currentItemIndex.value = itemIdx
     if (playing !== undefined) isPlaying.value = playing
@@ -246,12 +271,14 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    */
   function removeFromMyQueue(index: number) {
     const myQueue = userQueuesMap.get(currentUserId) || []
-    if (index >= 0 && index < myQueue.length) {
-      const newQueue = [...myQueue]
-      newQueue.splice(index, 1)
-      userQueuesMap.set(currentUserId, newQueue)
-      console.log(`[WatchPartyQueue] Removed video at index ${index}`)
-    }
+
+    // 인덱스 유효성 검사
+    if (index < 0 || index >= myQueue.length) return
+
+    const newQueue = [...myQueue]
+    newQueue.splice(index, 1)
+    userQueuesMap.set(currentUserId, newQueue)
+    console.log(`[WatchPartyQueue] Removed video at index ${index}`)
   }
 
   /**
@@ -286,14 +313,14 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    */
   function reorderMyQueue(fromIndex: number, toIndex: number) {
     const myQueue = userQueuesMap.get(currentUserId) || []
-    if (fromIndex < 0 || fromIndex >= myQueue.length || toIndex < 0 || toIndex >= myQueue.length) {
-      return
-    }
+
+    // 인덱스 유효성 검사
+    const isValidIndex = (idx: number) => idx >= 0 && idx < myQueue.length
+    if (!isValidIndex(fromIndex) || !isValidIndex(toIndex)) return
 
     const newQueue = [...myQueue]
-    const movedItem = newQueue[fromIndex]!
-    newQueue.splice(fromIndex, 1)
-    newQueue.splice(toIndex, 0, movedItem)
+    const [movedItem] = newQueue.splice(fromIndex, 1)
+    newQueue.splice(toIndex, 0, movedItem!)
 
     userQueuesMap.set(currentUserId, newQueue)
     console.log(`[WatchPartyQueue] Reordered: ${fromIndex} -> ${toIndex}`)
@@ -305,60 +332,57 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    */
   function moveToNextMyTurn(index: number) {
     const myQueue = userQueuesMap.get(currentUserId) || []
-    if (index < 0 || index >= myQueue.length) {
-      return
-    }
+
+    // 세이프가드: 인덱스 검증
+    if (index < 0 || index >= myQueue.length) return
 
     const users = activeUsers.value
     const myUserIndex = users.indexOf(currentUserId)
 
+    // 세이프가드: 활성 사용자 목록에 없음
     if (myUserIndex === -1) {
       console.log(`[WatchPartyQueue] Current user not in active users`)
       return
     }
 
-    // 글로벌 큐에서 다음 내 차례를 찾기
-    // 현재 재생 중인 영상이 내 것인지 확인
     const currentVideo = globalQueue.value[0]
-    const isMyTurn = currentVideo?.addedBy === (userNames.value.get(currentUserId) || currentUserId.replace('user-', '').slice(0, 8))
+    const myUserName = userNames.value.get(currentUserId) || currentUserId.replace('user-', '').slice(0, 8)
+    const isMyTurn = currentVideo?.addedBy === myUserName
 
-    let targetPosition = 0
-
-    if (isMyTurn) {
-      // 현재 내 영상이 재생 중이면, 내 큐에서 현재 재생 중인 다음 위치에 삽입
-      // 현재 재생 중인 영상의 내 큐 내 인덱스 찾기
-      const currentItemIdx = currentItemIndex.value % myQueue.length
-      targetPosition = (currentItemIdx + 1) % myQueue.length
-    } else {
-      // 현재 다른 사람 영상이 재생 중이면, 글로벌 큐에서 다음 내 차례 찾기
-      let userIdx = currentUserIndex.value
-      let itemIdx = currentItemIndex.value
-
-      // 다음 내 차례를 찾을 때까지 순회
-      for (let i = 0; i < users.length * 2; i++) {
-        userIdx++
-        if (userIdx >= users.length) {
-          userIdx = 0
-          itemIdx++
-        }
-
-        if (users[userIdx] === currentUserId) {
-          // 다음 내 차례를 찾음
-          const queue = userQueues.value.get(currentUserId) || []
-          targetPosition = itemIdx % queue.length
-          break
-        }
-      }
-    }
+    // 타겟 위치 계산
+    const targetPosition = isMyTurn
+      ? (currentItemIndex.value % myQueue.length + 1) % myQueue.length
+      : findNextMyTurnPosition(users, myQueue)
 
     // 영상을 목표 위치로 이동
     const newQueue = [...myQueue]
-    const movedItem = newQueue[index]!
-    newQueue.splice(index, 1)
-    newQueue.splice(targetPosition, 0, movedItem)
+    const [movedItem] = newQueue.splice(index, 1)
+    newQueue.splice(targetPosition, 0, movedItem!)
 
     userQueuesMap.set(currentUserId, newQueue)
     console.log(`[WatchPartyQueue] Moved to next my turn: ${index} -> ${targetPosition}`)
+  }
+
+  /**
+   * 글로벌 큐에서 다음 내 차례 위치 찾기
+   */
+  function findNextMyTurnPosition(users: string[], myQueue: QueueItem[]): number {
+    let userIdx = currentUserIndex.value
+    let itemIdx = currentItemIndex.value
+
+    for (let i = 0; i < users.length * 2; i++) {
+      userIdx++
+      if (userIdx >= users.length) {
+        userIdx = 0
+        itemIdx++
+      }
+
+      if (users[userIdx] === currentUserId) {
+        return itemIdx % myQueue.length
+      }
+    }
+
+    return 0
   }
 
   /**
@@ -366,6 +390,8 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    */
   function playNext() {
     const users = activeUsers.value
+
+    // 세이프가드: 빈 사용자 목록
     if (users.length === 0) {
       console.log(`[WatchPartyQueue] No videos in any queue`)
       return false
@@ -380,27 +406,28 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       newItemIndex++
     }
 
-    // 다음 영상 찾기 (빈 큐를 건너뜀)
-    const userId = users[newUserIndex]
-    const queue = userQueues.value.get(userId!)
-    if (queue && queue.length > 0) {
-      const actualItemIdx = newItemIndex % queue.length
-      const nextItem = queue[actualItemIdx]
+    const userId = users[newUserIndex]!
+    const queue = userQueues.value.get(userId)
 
-      if (nextItem) {
-        playbackStateMap.set('videoId', nextItem.videoId)
-        playbackStateMap.set('userIndex', newUserIndex)
-        playbackStateMap.set('itemIndex', newItemIndex)
-        playbackStateMap.set('currentTime', 0)
-        playbackStateMap.set('isPlaying', true)
-        playbackStateMap.set('lastUpdate', Date.now())
-        console.log(`[WatchPartyQueue] Playing next: ${nextItem.videoId} (user: ${userId}, item: ${actualItemIdx})`)
-        return true
-      }
+    // 세이프가드: 빈 큐
+    if (!queue?.length) {
+      console.log(`[WatchPartyQueue] Failed to find next video`)
+      return false
     }
 
-    console.log(`[WatchPartyQueue] Failed to find next video`)
-    return false
+    const actualItemIdx = newItemIndex % queue.length
+    const nextItem = queue[actualItemIdx]!
+
+    playbackStateMap.set('videoId', nextItem.videoId)
+    playbackStateMap.set('playingUserId', userId)
+    playbackStateMap.set('videoQueueIndex', actualItemIdx)
+    playbackStateMap.set('userIndex', newUserIndex)
+    playbackStateMap.set('itemIndex', newItemIndex)
+    playbackStateMap.set('currentTime', 0)
+    playbackStateMap.set('isPlaying', true)
+    playbackStateMap.set('lastUpdate', Date.now())
+    console.log(`[WatchPartyQueue] Playing next: ${nextItem.videoId} (user: ${userId}, item: ${actualItemIdx})`)
+    return true
   }
 
   /**
@@ -408,9 +435,9 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    */
   function playPrevious() {
     const users = activeUsers.value
-    if (users.length === 0) {
-      return false
-    }
+
+    // 세이프가드: 빈 사용자 목록
+    if (users.length === 0) return false
 
     let newUserIndex = currentUserIndex.value - 1
     let newItemIndex = currentItemIndex.value
@@ -421,26 +448,25 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       newItemIndex = Math.max(0, newItemIndex - 1)
     }
 
-    // 이전 영상 찾기
-    const userId = users[newUserIndex]
-    const queue = userQueues.value.get(userId!)
-    if (queue && queue.length > 0) {
-      const actualItemIdx = newItemIndex % queue.length
-      const prevItem = queue[actualItemIdx]
+    const userId = users[newUserIndex]!
+    const queue = userQueues.value.get(userId)
 
-      if (prevItem) {
-        playbackStateMap.set('videoId', prevItem.videoId)
-        playbackStateMap.set('userIndex', newUserIndex)
-        playbackStateMap.set('itemIndex', newItemIndex)
-        playbackStateMap.set('currentTime', 0)
-        playbackStateMap.set('isPlaying', true)
-        playbackStateMap.set('lastUpdate', Date.now())
-        console.log(`[WatchPartyQueue] Playing previous: ${prevItem.videoId}`)
-        return true
-      }
-    }
+    // 세이프가드: 빈 큐
+    if (!queue?.length) return false
 
-    return false
+    const actualItemIdx = newItemIndex % queue.length
+    const prevItem = queue[actualItemIdx]!
+
+    playbackStateMap.set('videoId', prevItem.videoId)
+    playbackStateMap.set('playingUserId', userId)
+    playbackStateMap.set('videoQueueIndex', actualItemIdx)
+    playbackStateMap.set('userIndex', newUserIndex)
+    playbackStateMap.set('itemIndex', newItemIndex)
+    playbackStateMap.set('currentTime', 0)
+    playbackStateMap.set('isPlaying', true)
+    playbackStateMap.set('lastUpdate', Date.now())
+    console.log(`[WatchPartyQueue] Playing previous: ${prevItem.videoId}`)
+    return true
   }
 
   /**
@@ -449,6 +475,8 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    */
   function playAt(offsetInPreview: number) {
     const users = activeUsers.value
+
+    // 세이프가드: 빈 사용자 목록 또는 유효하지 않은 오프셋
     if (users.length === 0 || offsetInPreview < 0) return false
 
     // 현재 위치에서 offset만큼 이동한 위치 계산
@@ -463,25 +491,25 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       }
     }
 
-    const userId = users[userIdx]
-    const queue = userQueues.value.get(userId!)
-    if (queue && queue.length > 0) {
-      const actualItemIdx = itemIdx % queue.length
-      const item = queue[actualItemIdx]
+    const userId = users[userIdx]!
+    const queue = userQueues.value.get(userId)
 
-      if (item) {
-        playbackStateMap.set('videoId', item.videoId)
-        playbackStateMap.set('userIndex', userIdx)
-        playbackStateMap.set('itemIndex', itemIdx)
-        playbackStateMap.set('currentTime', 0)
-        playbackStateMap.set('isPlaying', true)
-        playbackStateMap.set('lastUpdate', Date.now())
-        console.log(`[WatchPartyQueue] Playing at offset ${offsetInPreview}: ${item.videoId}`)
-        return true
-      }
-    }
+    // 세이프가드: 빈 큐
+    if (!queue?.length) return false
 
-    return false
+    const actualItemIdx = itemIdx % queue.length
+    const item = queue[actualItemIdx]!
+
+    playbackStateMap.set('videoId', item.videoId)
+    playbackStateMap.set('playingUserId', userId)
+    playbackStateMap.set('videoQueueIndex', actualItemIdx)
+    playbackStateMap.set('userIndex', userIdx)
+    playbackStateMap.set('itemIndex', itemIdx)
+    playbackStateMap.set('currentTime', 0)
+    playbackStateMap.set('isPlaying', true)
+    playbackStateMap.set('lastUpdate', Date.now())
+    console.log(`[WatchPartyQueue] Playing at offset ${offsetInPreview}: ${item.videoId}`)
+    return true
   }
 
   /**
@@ -489,31 +517,35 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
    * 이미 재생 중인 영상이 있으면 아무것도 하지 않음
    */
   function playFirst() {
-    // 이미 재생 중인 영상이 있으면 무시
+    // 세이프가드: 이미 재생 중
     if (currentVideoId.value) {
       console.log(`[WatchPartyQueue] Already playing: ${currentVideoId.value}, skipping playFirst`)
       return false
     }
 
     const users = activeUsers.value
+
+    // 세이프가드: 빈 사용자 목록
     if (users.length === 0) return false
 
-    const userId = users[0]
-    const queue = userQueues.value.get(userId!)
-    if (queue && queue.length > 0) {
-      const firstItem = queue[0]
+    const userId = users[0]!
+    const queue = userQueues.value.get(userId)
 
-      playbackStateMap.set('videoId', firstItem!.videoId)
-      playbackStateMap.set('userIndex', 0)
-      playbackStateMap.set('itemIndex', 0)
-      playbackStateMap.set('currentTime', 0)
-      playbackStateMap.set('isPlaying', true)
-      playbackStateMap.set('lastUpdate', Date.now())
-      console.log(`[WatchPartyQueue] Playing first video: ${firstItem!.videoId}`)
-      return true
-    }
+    // 세이프가드: 빈 큐
+    if (!queue?.length) return false
 
-    return false
+    const firstItem = queue[0]!
+
+    playbackStateMap.set('videoId', firstItem.videoId)
+    playbackStateMap.set('playingUserId', userId)
+    playbackStateMap.set('videoQueueIndex', 0)
+    playbackStateMap.set('userIndex', 0)
+    playbackStateMap.set('itemIndex', 0)
+    playbackStateMap.set('currentTime', 0)
+    playbackStateMap.set('isPlaying', true)
+    playbackStateMap.set('lastUpdate', Date.now())
+    console.log(`[WatchPartyQueue] Playing first video: ${firstItem.videoId}`)
+    return true
   }
 
   /**

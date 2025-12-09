@@ -33,6 +33,7 @@ export function useSignalingServer(signalingUrl: string) {
   const messageHandlers = ref(new Map<string, Set<MessageHandler>>())
   const reconnectTimer = ref<number | null>(null)
   const reconnectDelay = 2000 // 2초 후 재연결
+  const subscribedTopics = ref<Set<string>>(new Set()) // 구독 중인 토픽 추적
 
   /**
    * 시그널링 서버 연결
@@ -52,6 +53,18 @@ export function useSignalingServer(signalingUrl: string) {
         console.log('[Signaling] 연결됨')
         ws.value = socket
         isConnected.value = true
+
+        // 재연결 시 기존 구독 복원
+        if (subscribedTopics.value.size > 0) {
+          const topics = Array.from(subscribedTopics.value)
+          console.log('[Signaling] 재연결 후 구독 복원:', topics)
+          const message: SignalingSubscribeMessage = {
+            type: 'subscribe',
+            topics,
+          }
+          socket.send(JSON.stringify(message))
+        }
+
         resolve()
       }
 
@@ -112,6 +125,9 @@ export function useSignalingServer(signalingUrl: string) {
       return
     }
 
+    // 구독 토픽 추적
+    topics.forEach(topic => subscribedTopics.value.add(topic))
+
     const message: SignalingSubscribeMessage = {
       type: 'subscribe',
       topics,
@@ -128,6 +144,9 @@ export function useSignalingServer(signalingUrl: string) {
     if (!ws.value || ws.value.readyState !== WebSocket.OPEN) {
       return
     }
+
+    // 구독 토픽에서 제거
+    topics.forEach(topic => subscribedTopics.value.delete(topic))
 
     const message: SignalingUnsubscribeMessage = {
       type: 'unsubscribe',
@@ -196,6 +215,7 @@ export function useSignalingServer(signalingUrl: string) {
 
     isConnected.value = false
     messageHandlers.value.clear()
+    subscribedTopics.value.clear()
   }
 
   // cleanup

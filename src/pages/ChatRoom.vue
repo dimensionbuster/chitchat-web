@@ -38,7 +38,17 @@ if (!localStorage.getItem('uuid')) {
 
 const uuid = localStorage.getItem('uuid')!
 const me = `user-${uuid}`
-const myName = ref(props.name?.trim() ? `${props.name.trim()}${me.slice(-4)}` : `User ${me.slice(-4)}`)
+
+// 닉네임 설정: props.name > localStorage > 기본값(User+uuid)
+const storedName = localStorage.getItem('name')
+const nameToUse = props.name?.trim() || storedName?.trim() || ''
+const myName = ref(nameToUse ? `${nameToUse}${me.slice(-4)}` : `User ${me.slice(-4)}`)
+
+// localStorage에 닉네임 저장 (props로 전달된 경우)
+if (props.name && (!storedName || storedName !== props.name)) {
+  localStorage.setItem('name', props.name)
+}
+
 const activeRoomId = props.roomId?.trim() || 'default-room'
 
 const yjsReady = ref(false)
