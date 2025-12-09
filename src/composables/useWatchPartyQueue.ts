@@ -4,6 +4,20 @@ import type { WebrtcProvider } from 'y-webrtc'
 import type { QueueItem } from './useYouTubePlaylist'
 
 /**
+ * 재생 상태 타입 정의
+ */
+interface PlaybackState {
+  videoId: string | null
+  playingUserId: string | null
+  videoQueueIndex: number
+  userIndex: number
+  itemIndex: number
+  currentTime: number
+  isPlaying: boolean
+  lastUpdate: number
+}
+
+/**
  * Watch Party 글로벌 대기열 관리
  * 각 사용자의 개인 대기열을 라운드 로빈 방식으로 무한 순환
  */
@@ -12,7 +26,7 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
   const userQueuesMap = doc.getMap<QueueItem[]>('watchPartyQueues')
 
   // Yjs Map: 현재 재생 상태
-  const playbackStateMap = doc.getMap('watchPartyPlayback')
+  const playbackStateMap = doc.getMap<PlaybackState[keyof PlaybackState]>('watchPartyPlayback')
 
   // Yjs Map: userId -> userName (사용자 이름 매핑)
   const userNamesMap = doc.getMap<string>('watchPartyUserNames')
@@ -102,11 +116,37 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     return users.sort() // 일관된 순서를 위해 정렬
   })
 
+  // 이전 활성 사용자 목록 (변경 감지용)
+  const previousActiveUserIds = ref<Set<string>>(new Set())
+
+  // 안정적인 사용자 순서 유지 (재생 중인 사용자 기준)
+  const stableUserOrder = ref<string[]>([])
+
   /**
    * 활성 사용자 목록 (대기열이 있고 비활성화되지 않은 사용자만)
+   * 기존 순서를 유지하되, 새로 추가되는 사용자는 맨 뒤에 배치
    */
   const activeUsers = computed(() => {
-    return allUsers.value.filter(userId => !disabledUsers.value.has(userId))
+    const currentActive = new Set(
+      allUsers.value.filter(userId => !disabledUsers.value.has(userId))
+    )
+
+    // 새로 추가된 사용자 찾기
+    const newUsers = Array.from(currentActive).filter(
+      userId => !previousActiveUserIds.value.has(userId)
+    )
+
+    // 기존 순서에서 여전히 활성화된 사용자만 필터링
+    const existing = stableUserOrder.value.filter(userId => currentActive.has(userId))
+
+    // 기존 사용자 + 새로운 사용자 (맨 뒤)
+    const result = [...existing, ...newUsers.sort()]
+
+    // 상태 업데이트
+    previousActiveUserIds.value = currentActive
+    stableUserOrder.value = result
+
+    return result
   })
 
   /**
@@ -122,33 +162,28 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
     let itemIdx = 0
 
     // 현재 재생 중인 영상이 있는 경우 처리
-    const hasCurrentVideo = currentVideoId.value && currentPlayingUserId.value
-    if (hasCurrentVideo) {
-      const playingUserId = currentPlayingUserId.value!
-      const playingUserIdx = users.indexOf(playingUserId)
-      const isUserActive = playingUserIdx !== -1
+    if (currentVideoId.value && currentPlayingUserId.value) {
+      const playingUserId = currentPlayingUserId.value
+      // allUsers에서 찾기 (비활성화된 사용자도 포함)
+      const currentQueue = userQueues.value.get(playingUserId)
+      const currentItem = findCurrentVideoInQueue(currentQueue)
 
-      if (isUserActive) {
-        const currentQueue = userQueues.value.get(playingUserId)
-        const currentItem = findCurrentVideoInQueue(currentQueue)
+      if (currentItem) {
+        const userName = userNames.value.get(playingUserId) ||
+                        playingUserId.replace('user-', '').slice(0, 8)
 
-        if (currentItem) {
-          const userName = userNames.value.get(playingUserId) ||
-                          playingUserId.replace('user-', '').slice(0, 8)
+        result.push({
+          ...currentItem,
+          addedBy: userName,
+        })
 
-          result.push({
-            ...currentItem,
-            addedBy: userName,
-          })
+        // activeUsers 순서가 안정적으로 유지되므로 currentUserIndex 사용
+        userIdx = currentUserIndex.value + 1
+        itemIdx = currentItemIndex.value
 
-          // 다음 사용자부터 시작하도록 설정
-          userIdx = playingUserIdx + 1
-          itemIdx = currentVideoQueueIndex.value
-
-          if (userIdx >= users.length) {
-            userIdx = 0
-            itemIdx++
-          }
+        if (userIdx >= users.length) {
+          userIdx = 0
+          itemIdx++
         }
       }
     }    // 최대 20개까지 생성

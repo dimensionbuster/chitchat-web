@@ -83,6 +83,9 @@ const playlistControlHeight = ref(200) // 플레이리스트 제어 기본 높�
 const isResizingPlaylist = ref(false)
 const playlistWidth = ref(400) // 재생목록 기본 너비 (px)
 
+// 내 대기열 검색 필터
+const myQueueFilter = ref('')
+
 // 우클릭 메뉴 상态
 const contextMenu = ref<{ x: number; y: number; index: number } | null>(null)
 
@@ -546,9 +549,11 @@ onMounted(async () => {
   // isWatchParty 플래그를 추가하여 접속자 목록에서 필터링
   if (provider) {
     provider.awareness.setLocalStateField('userUuid', uuid)
-    // 채팅방과 동일한 형식으로 닉네임 생성 (닉네임 + UUID 뒷부분)
-    const formattedName = currentUserName?.trim() ? `${currentUserName.trim()}${currentUserId.slice(-4)}` : `User ${currentUserId.slice(-4)}`
-    provider.awareness.setLocalStateField('nickname', formattedName)
+    if (currentUserName) {
+      // 채팅방과 동일한 형식으로 닉네임 생성 (닉네임 + UUID 뒷부분)
+      const formattedName = currentUserName.trim() ? `${currentUserName.trim()}${currentUserId.slice(-4)}` : `User ${currentUserId.slice(-4)}`
+      provider.awareness.setLocalStateField('nickname', formattedName)
+    }
     // WatchParty 피어임을 표시 (접속자 목록에서 제외하기 위함)
     provider.awareness.setLocalStateField('isWatchParty', true)
   }
@@ -665,7 +670,7 @@ onUnmounted(() => {
           <!-- 내 대기열 -->
           <div class="my-queue" :style="{ height: myQueueCollapsed ? 'auto' : `${myQueueHeight}px` }">
             <div class="queue-header">
-              <h4>내 대기열 ({{ queue?.myQueue.length || 0 }})</h4>
+              <input type="text" v-model="myQueueFilter" :placeholder="`내 대기열 (${queue?.myQueue.length || 0})`" class="search-input" />
               <div class="header-actions">
                 <button
                   @click="queue?.clearMyQueue()"
@@ -696,41 +701,42 @@ onUnmounted(() => {
             <div
               v-for="(item, index) in queue?.myQueue"
               :key="`my-${index}`"
-              class="queue-item"
               @contextmenu="showContextMenu($event, index)"
             >
-              <div class="reorder-controls">
-                <button
-                  @click="queue?.reorderMyQueue(index, index - 1)"
-                  class="reorder-btn"
-                  :disabled="index === 0"
-                  title="위로"
-                >
-                  ↑
-                </button>
-                <button
-                  @click="queue?.reorderMyQueue(index, index + 1)"
-                  class="reorder-btn"
-                  :disabled="!queue?.myQueue || index === queue.myQueue.length - 1"
-                  title="아래로"
-                >
-                  ↓
-                </button>
-              </div>
-              <img
-                v-if="videoMetadataCache.get(item.videoId)?.thumbnailUrl"
-                :src="videoMetadataCache.get(item.videoId)?.thumbnailUrl"
-                class="thumbnail"
-              />
-              <div class="item-info">
-                <div class="item-title">
-                  {{ videoMetadataCache.get(item.videoId)?.title || item.videoId }}
+              <div class="queue-item" v-if="!myQueueFilter || videoMetadataCache.get(item.videoId)?.title?.toLowerCase().includes(myQueueFilter.toLowerCase())">
+                <div class="reorder-controls">
+                  <button
+                    @click="queue?.reorderMyQueue(index, index - 1)"
+                    class="reorder-btn"
+                    :disabled="index === 0"
+                    title="위로"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    @click="queue?.reorderMyQueue(index, index + 1)"
+                    class="reorder-btn"
+                    :disabled="!queue?.myQueue || index === queue.myQueue.length - 1"
+                    title="아래로"
+                  >
+                    ↓
+                  </button>
                 </div>
-                <div class="item-channel">
-                  {{ videoMetadataCache.get(item.videoId)?.channelTitle || '' }}
+                <img
+                  v-if="videoMetadataCache.get(item.videoId)?.thumbnailUrl"
+                  :src="videoMetadataCache.get(item.videoId)?.thumbnailUrl"
+                  class="thumbnail"
+                />
+                <div class="item-info">
+                  <div class="item-title">
+                    {{ videoMetadataCache.get(item.videoId)?.title || item.videoId }}
+                  </div>
+                  <div class="item-channel">
+                    {{ videoMetadataCache.get(item.videoId)?.channelTitle || '' }}
+                  </div>
                 </div>
+                <button @click="queue?.removeFromMyQueue(index)" class="remove-btn">✕</button>
               </div>
-              <button @click="queue?.removeFromMyQueue(index)" class="remove-btn">✕</button>
             </div>
           </div>
         </div>
@@ -1178,6 +1184,17 @@ onUnmounted(() => {
   align-items: center;
 }
 
+.search-input {
+  padding: 6px 12px;
+  border: 1px solid var(--wp-border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  width: 100%;
+  margin-right: 6px;
+}
+
 .clear-btn {
   padding: 4px 12px;
   background: #e74c3c;
@@ -1240,10 +1257,8 @@ onUnmounted(() => {
 .my-queue h4,
 .global-queue h4 {
   margin: 0;
-  padding: 12px;
   font-size: 14px;
   color: var(--wp-text-secondary);
-  border-bottom: 1px solid var(--wp-border-color);
 }
 
 .queue-list {
@@ -1489,7 +1504,6 @@ onUnmounted(() => {
 .playlist-control {
   background: var(--wp-bg-secondary);
   border-radius: 8px;
-  margin-bottom: 12px;
   display: flex;
   flex-direction: column;
   min-height: 50px;
