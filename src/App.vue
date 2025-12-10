@@ -11,12 +11,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <Suspense>
-    <router-view />
-    <template #fallback>
-      <div class="loading">Loading...</div>
-    </template>
-  </Suspense>
+  <router-view />
 </template>
 
 <style>

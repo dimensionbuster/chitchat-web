@@ -4,6 +4,8 @@ import { useWatchPartyQueue } from '@/composables/useWatchPartyQueue'
 import { useYouTubePlaylist, extractYouTubeVideoId, fetchMultipleVideoMetadata, type VideoMetadata } from '@/composables/useYouTubePlaylist'
 import { useStyleSettings } from '@/composables/useStyleSettings'
 import { showConfirm } from '@/composables/useCustomDialog'
+import { useSignalingServer } from '@/composables/useSignalingServer'
+import { useWatchPartyInitialSync } from '@/composables/useWatchPartyInitialSync'
 import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from 'y-indexeddb'
@@ -32,11 +34,21 @@ const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || ''
 // Yjs 설정
 // WatchParty 전용 Y.Doc 생성 (채팅 메시지와 분리)
 // 같은 roomId를 사용하지만 문서를 분리하여 불필요한 데이터 동기화 방지
-const doc = new Y.Doc()
+const doc = new Y.Doc({gc: true})
 const SIGNALING_SERVER_URL = import.meta.env.VITE_SIGNAL_URLS || 'wss://webrtc.chitchatdimension.com'
 
 let provider: WebrtcProvider | null = null
 let persistence: IndexeddbPersistence | null = null
+
+// 시그널링 서버 및 초기 동기화
+const SIGNALING_WS_URL = import.meta.env.VITE_SIGNAL_URLS || 'wss://webrtc.chitchatdimension.com'
+const signaling = useSignalingServer(SIGNALING_WS_URL)
+let initialSync: ReturnType<typeof useWatchPartyInitialSync> | null = null
+
+// 초기 동기화 상태
+const isSyncing = ref(false)
+const syncStatus = ref<'idle' | 'requesting' | 'receiving' | 'completed' | 'failed'>('idle')
+const isResyncingData = ref(false) // 재동기화 중 여부
 
 // 사용자 ID 및 이름
 // WatchParty는 자체 UUID 생성 (채팅방과 별개)
@@ -533,14 +545,127 @@ const handleMinimize = () => {
   window.electronApi?.windowMinimize()
 }
 
+// 데이터 재동기화 (피어 기준) - IndexedDB 삭제 후 새로고침
+async function handleResyncData() {
+  if (isResyncingData.value) return
+
+  const confirmed = await showConfirm(
+    '🔄 데이터를 피어로부터 다시 동기화합니다.\n\n로컬 데이터가 삭제되고 페이지가 새로고침됩니다.\n계속하시겠습니까?'
+  )
+
+  if (!confirmed) return
+
+  try {
+    isResyncingData.value = true
+    isSyncing.value = true
+    syncStatus.value = 'requesting'
+    console.log('[WatchParty] Starting data resync...')
+
+    // 1. Queue composable 정리
+    queue.value = null
+
+    // 2. 기존 초기 동기화 정리
+    if (initialSync) {
+      initialSync.dispose()
+      initialSync = null
+    }
+
+    // 3. WebRTC Provider 정리
+    if (provider) {
+      provider.disconnect()
+      provider.destroy()
+      provider = null
+    }
+
+    // 4. IndexedDB Persistence 삭제
+    if (persistence) {
+      persistence.destroy()
+      persistence = null
+    }
+
+    // 5. Y.Doc 파괴
+    doc.destroy()
+
+    // 6. IndexedDB 데이터베이스 삭제
+    const dbName = `watchparty-${props.roomId}`
+    console.log(`[WatchParty] Deleting IndexedDB: ${dbName}`)
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(dbName)
+      request.onsuccess = () => {
+        console.log('[WatchParty] IndexedDB deleted successfully')
+        resolve()
+      }
+      request.onerror = () => {
+        console.error('[WatchParty] Failed to delete IndexedDB')
+        reject(request.error)
+      }
+      request.onblocked = () => {
+        console.warn('[WatchParty] IndexedDB deletion blocked')
+        resolve() // 차단되어도 계속 진행
+      }
+    })
+
+    // 7. 시그널링 서버 연결 종료
+    signaling.disconnect()
+
+    console.log('[WatchParty] Reloading page for fresh sync...')
+
+    // 8. 페이지 새로고침 - onMounted에서 initialSync가 자동으로 실행됨
+    window.location.reload()
+  } catch (error) {
+    console.error('[WatchParty] Resync failed:', error)
+    syncStatus.value = 'failed'
+    isResyncingData.value = false
+    isSyncing.value = false
+    window.electronApi?.showDialog('❌ 데이터 재동기화에 실패했습니다.\n\n페이지를 수동으로 새로고침해주세요.')
+  }
+}
+
+// 초기화 완료 여부 (렌더링 제어용)
+const isInitialized = ref(false)
+
 // 초기화
 onMounted(async () => {
-  // IndexedDB persistence (WatchParty 전용 네임스페이스 사용)
-  // 채팅방과 다른 데이터베이스를 사용하여 채팅 메시지 로드 방지
+  // 1. 먼저 시그널링 서버 연결 및 초기 동기화 시도 (렌더링 전)
+  try {
+    isSyncing.value = true
+    syncStatus.value = 'requesting'
+    console.log('[WatchParty] Connecting to signaling server...')
+    await signaling.connect()
+    console.log('[WatchParty] Signaling server connected')
+
+    // 초기 동기화 composable 생성
+    initialSync = useWatchPartyInitialSync(signaling, uuid, doc, props.roomId)
+
+    // 초기 동기화 요청
+    console.log('[WatchParty] Requesting initial sync...')
+    syncStatus.value = 'receiving'
+    const snapshot = await initialSync.requestInitialSync()
+
+    if (snapshot && snapshot.byteLength > 0) {
+      console.log(`[WatchParty] Received snapshot: ${(snapshot.byteLength / 1024).toFixed(2)}KB`)
+      Y.applyUpdate(doc, snapshot)
+      console.log('[WatchParty] Snapshot applied successfully')
+      syncStatus.value = 'completed'
+    } else {
+      console.log('[WatchParty] No existing data - starting fresh')
+      syncStatus.value = 'completed'
+    }
+
+    // 이후 새 접속자에게 데이터 제공하는 역할
+    initialSync.initializeAsProvider()
+  } catch (error) {
+    console.error('[WatchParty] Initial sync failed:', error)
+    syncStatus.value = 'failed'
+  } finally {
+    isSyncing.value = false
+  }
+
+  // 2. 초기 동기화 완료 후 IndexedDB persistence 연결
+  // (동기화된 데이터가 있으면 그것을 저장, 없으면 로컬 데이터 로드)
   persistence = new IndexeddbPersistence(`watchparty-${props.roomId}`, doc)
 
-  // WebRTC provider (WatchParty 전용 룸 사용)
-  // 채팅방과 다른 WebRTC 룸을 사용하여 채팅 데이터 동기화 방지
+  // 3. WebRTC provider 연결 (실시간 동기화용)
   provider = new WebrtcProvider(`watchparty-${props.roomId}`, doc, {
     signaling: [SIGNALING_SERVER_URL],
   })
@@ -558,10 +683,13 @@ onMounted(async () => {
     provider.awareness.setLocalStateField('isWatchParty', true)
   }
 
-  // Queue 초기화 (사용자 이름 전달)
+  // 4. 동기화 완료 후 Queue 초기화 (사용자 이름 전달)
   queue.value = useWatchPartyQueue(doc, currentUserId, currentUserName, provider)
 
-  // YouTube Player 초기화
+  // 5. 초기화 완료 표시
+  isInitialized.value = true
+
+  // 6. YouTube Player 초기화
   await nextTick()
   initYouTubePlayer()
 
@@ -594,6 +722,13 @@ onUnmounted(() => {
   if (persistence) {
     persistence.destroy()
   }
+  // 초기 동기화 정리
+  if (initialSync) {
+    initialSync.dispose()
+    initialSync = null
+  }
+  // 시그널링 서버 연결 종료
+  signaling.disconnect()
 
   // 이벤트 리스너 제거
   document.removeEventListener('click', hideContextMenu)
@@ -607,14 +742,40 @@ onUnmounted(() => {
       <div class="title">
         <span class="icon">📺</span>
         <span>Watch Party - {{ roomId }}</span>
+        <!-- 동기화 상태 표시 -->
+        <span v-if="isSyncing" class="sync-indicator syncing" title="동기화 중..."></span>
+        <span v-else-if="syncStatus === 'completed'" class="sync-indicator connected" title="연결됨"></span>
+        <span v-else-if="syncStatus === 'failed'" class="sync-indicator disconnected" title="연결 실패"></span>
       </div>
       <div class="window-controls">
+        <button
+          @click="handleResyncData"
+          class="control-btn resync"
+          :disabled="isResyncingData || !isInitialized"
+          title="피어 기준 데이터 재동기화"
+        >
+          🔄
+        </button>
         <button @click="handleMinimize" class="control-btn minimize">─</button>
         <button @click="handleClose" class="control-btn close">✕</button>
       </div>
     </div>
 
-    <div class="content" :class="{ resizing: isResizing || isResizingPlaylistControl || isResizingPlaylist }">
+    <!-- 초기화 중 로딩 화면 -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="!isInitialized" class="loading-overlay">
+          <div class="loading-container">
+            <div class="loading-spinner-ring"></div>
+            <div class="loading-text">
+              {{ syncStatus === 'requesting' ? '피어 연결 중...' : syncStatus === 'receiving' ? '데이터 동기화 중...' : '초기화 중...' }}
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <div v-if="isInitialized" class="content" :class="{ resizing: isResizing || isResizingPlaylistControl || isResizingPlaylist }">
       <!-- 왼쪽: 플레이어 -->
       <div class="player-section">
         <div class="player-container">
@@ -625,14 +786,14 @@ onUnmounted(() => {
 
         <!-- 재생 컨트롤 -->
         <div class="playback-controls">
-          <button @click="queue?.playPrevious()" :disabled="!queue?.currentVideo" class="control-btn">
-            ⏮️
+          <button @click="queue?.playPrevious()" :disabled="!queue?.currentVideo" class="control-btn prev-btn" title="이전">
+            <span class="icon-prev"></span>
           </button>
-          <button @click="queue?.togglePlayback()" :disabled="!queue?.currentVideo" class="control-btn">
-            {{ queue?.isPlaying ? '⏸️' : '▶️' }}
+          <button @click="queue?.togglePlayback()" :disabled="!queue?.currentVideo" class="control-btn play-btn" :title="queue?.isPlaying ? '일시정지' : '재생'">
+            <span :class="queue?.isPlaying ? 'icon-pause' : 'icon-play'"></span>
           </button>
-          <button @click="queue?.playNext()" :disabled="!queue?.nextVideo" class="control-btn">
-            ⏭️
+          <button @click="queue?.playNext()" :disabled="!queue?.nextVideo" class="control-btn next-btn" title="다음">
+            <span class="icon-next"></span>
           </button>
 
           <div class="current-info">
@@ -909,7 +1070,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: linear-gradient(135deg, var(--wp-gradient-start) 0%, var(--wp-gradient-end) 100%);
+  background: var(--bg-primary);
   color: var(--wp-text-primary);
   -webkit-app-region: drag;
   user-select: none;
@@ -921,10 +1082,48 @@ onUnmounted(() => {
   gap: 8px;
   font-weight: 600;
   font-size: 14px;
+  overflow: visible;
 }
 
 .title .icon {
   font-size: 18px;
+}
+
+/* 동기화 상태 인디케이터 */
+.sync-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 8px;
+  flex-shrink: 0;
+  transition: all 0.3s ease;
+}
+
+.sync-indicator.syncing {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.6);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.sync-indicator.connected {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.sync-indicator.disconnected {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.2);
+  }
 }
 
 .window-controls {
@@ -952,6 +1151,23 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.3);
 }
 
+.control-btn.resync {
+  font-size: 14px;
+}
+
+.control-btn.resync:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.5);
+}
+
+.control-btn.resync:disabled {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .control-btn.close:hover {
   background: #e74c3c;
 }
@@ -959,6 +1175,55 @@ onUnmounted(() => {
 .control-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 로딩 오버레이 */
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.loading-spinner-ring {
+  width: 50px;
+  height: 50px;
+  border: 4px solid var(--color-primary-light);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loading-text {
+  font-size: 16px;
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: center;
+  max-width: 280px;
+}
+
+/* 페이드 트랜지션 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .content {
@@ -1028,6 +1293,96 @@ onUnmounted(() => {
   font-size: 18px;
   background: var(--wp-accent-primary);
   color: var(--wp-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.playback-controls .control-btn:hover:not(:disabled) {
+  background: var(--wp-accent-secondary);
+  transform: scale(1.05);
+}
+
+.playback-controls .control-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+/* 이전 버튼 아이콘 */
+.icon-prev {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.icon-prev::before {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 10px;
+  background: currentColor;
+}
+
+.icon-prev::after {
+  content: '';
+  display: block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 5px 7px 5px 0;
+  border-color: transparent currentColor transparent transparent;
+}
+
+/* 다음 버튼 아이콘 */
+.icon-next {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.icon-next::before {
+  content: '';
+  display: block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 5px 0 5px 7px;
+  border-color: transparent transparent transparent currentColor;
+}
+
+.icon-next::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 10px;
+  background: currentColor;
+}
+
+/* 재생 버튼 아이콘 */
+.icon-play {
+  display: block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 6px 0 6px 10px;
+  border-color: transparent transparent transparent currentColor;
+  margin-left: 2px;
+}
+
+/* 일시정지 버튼 아이콘 */
+.icon-pause {
+  display: flex;
+  gap: 3px;
+}
+
+.icon-pause::before,
+.icon-pause::after {
+  content: '';
+  display: block;
+  width: 3px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 1px;
 }
 
 .current-info {

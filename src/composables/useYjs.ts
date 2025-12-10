@@ -7,13 +7,16 @@ import { useFileTransferProgress } from './useFileTransferProgress'
 import { useInitialSync } from './useInitialSync.v3'
 import { useSignalingServer } from './useSignalingServer'
 
+// 🔥 전역 초기 동기화 상태 (부모 컴포넌트에서 접근 가능)
+export const globalIsInitialSyncing = ref(false)
+export const globalInitialSyncProgress = ref('')
+
 const DEFAULT_VISIBLE_MESSAGES = 50
 const LOAD_MORE_COUNT = 30
 const ROOM_ID = 'default-room'
 
 // 성능 최적화 설정
 const SORT_DEBOUNCE_MS = 100  // 디바운싱: 100ms 내 여러 변경사항을 한 번에 처리
-const SORT_WINDOW = 300        // 대용량 메시지 시 최근 N개만 정렬
 
 const SIGNAL_URLS = (import.meta.env.VITE_SIGNAL_URLS || '')
   .split(',')
@@ -46,7 +49,24 @@ const waitForSync = (provider: WebrtcProvider) =>
   })
 
 async function createYjsInstance(roomId: string) {
-  const doc = new Y.Doc()
+  const doc = new Y.Doc({ gc: true })
+
+  // 🔄 초기 동기화 상태 추적 (로컬 + 전역 동시 업데이트)
+  const isInitialSyncing = ref(true)
+  const initialSyncProgress = ref('')
+
+  // 전역 상태도 함께 업데이트하는 함수
+  const setInitialSyncState = (syncing: boolean, progress?: string) => {
+    isInitialSyncing.value = syncing
+    globalIsInitialSyncing.value = syncing
+    if (progress !== undefined) {
+      initialSyncProgress.value = progress
+      globalInitialSyncProgress.value = progress
+    }
+  }
+
+  // 초기 상태 설정
+  setInitialSyncState(true, '초기화 중...')
 
   // 🔄 마이그레이션: Y.Array → Y.Map (기존 데이터 있으면 자동 전환)
   const oldMessages = doc.getArray<ChatMessage>('messages')
@@ -77,7 +97,7 @@ async function createYjsInstance(roomId: string) {
   // 🔥 디바운싱을 위한 타이머
   let sortTimeout: ReturnType<typeof setTimeout> | null = null
 
-  // 🔥 최적화된 정렬 함수 (디바운싱 + 부분 정렬)
+  // 🔥 최적화된 정렬 함수 (디바운싱 + 전체 정렬)
   const updateSortedMessages = () => {
     const allMessages = Array.from(messagesMap.values())
 
@@ -88,30 +108,24 @@ async function createYjsInstance(roomId: string) {
       }
     })
 
-    // 하이브리드 정렬: 물리적 시간 우선, 같은 시간대(2분)면 Lamport로 인과관계 보장
+    // 하이브리드 정렬: 물리적 시간 우선, 같은 시간대(1분)면 Lamport로 인과관계 보장
     const sortMessages = (msgs: ChatMessage[]) =>
       msgs.sort((a, b) => {
         const timeDiff = Math.abs(a.ts - b.ts)
         const TIME_WINDOW = 60000 // 1분 (60,000ms)
 
-        // 1. 시간 차이가 2분 이상이면 물리적 시간 우선
+        // 1. 시간 차이가 1분 이상이면 물리적 시간 우선
         if (timeDiff > TIME_WINDOW) return a.ts - b.ts
-        // 2. 2분 이내(동시 발생)면 Lamport로 인과관계 순서 보장
+        // 2. 1분 이내(동시 발생)면 Lamport로 인과관계 순서 보장
         if (a.lamport !== b.lamport) return a.lamport - b.lamport
         // 3. 최종 결정자: 물리적 시간 → ID
         if (a.ts !== b.ts) return a.ts - b.ts
         return a.id.localeCompare(b.id)
       })
 
-    // 메시지가 적으면 전체 정렬
-    if (allMessages.length <= SORT_WINDOW) {
-      sortedMessagesRef.value = sortMessages(allMessages)
-    } else {
-      // 대용량: 최근 메시지만 정렬 (오래된 메시지는 이미 정렬되어 있다고 가정)
-      const oldMessages = allMessages.slice(0, -SORT_WINDOW)
-      const recentMessages = sortMessages(allMessages.slice(-SORT_WINDOW))
-      sortedMessagesRef.value = [...oldMessages, ...recentMessages]
-    }
+    // 🔥 항상 전체 정렬 수행 (messagesMap.values()는 삽입 순서이므로 정렬 필요)
+    // 스냅샷 가져오기, 다른 피어에서 동기화 시 순서가 보장되지 않음
+    sortedMessagesRef.value = sortMessages(allMessages)
 
     // displayedMessages를 항상 업데이트 (알림을 위해 필요)
     displayedMessages.value = sortedMessagesRef.value.slice(-visibleMessageCount.value)
@@ -309,6 +323,9 @@ async function createYjsInstance(roomId: string) {
     forceResync,
     exportSnapshot,
     importSnapshot,
+    isInitialSyncing: readonly(isInitialSyncing),
+    initialSyncProgress: readonly(initialSyncProgress),
+    _setInitialSyncState: setInitialSyncState,
   }
 
   return instance
@@ -374,11 +391,14 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
 
   // 🔥 시그널링 서버를 통한 초기 동기화 (userUuid가 있을 때만)
   if (userUuid) {
+    instance._setInitialSyncState(true, '시그널링 서버 연결 중...')
+
     // 시그널링 서버 연결
     const signaling = useSignalingServer(SIGNALING_SERVER_URL)
     await signaling.connect()
 
     console.log('[#3-1] 시그널링 서버 연결됨')
+    instance._setInitialSyncState(true, '서버 연결 완료')
 
     // y-webrtc awareness만 연결 (doc sync 없이)
     instance.provider.awareness.setLocalState({
@@ -406,12 +426,14 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
     if (isNewUser) {
       // 🔥 신규 접속자: 시그널링 서버를 통해 초기 상태 요청
       console.log('[#3-3] 초기 동기화 시작')
+      instance._setInitialSyncState(true, '채팅 기록 동기화 중...')
 
       const snapshot = await requestInitialSync()
 
       if (snapshot) {
         // 스냅샷 적용
         console.log(`[#3-4] 초기 스냅샷 적용 중... (${(snapshot.byteLength / 1024 / 1024).toFixed(2)}MB)`)
+        instance._setInitialSyncState(true, `스냅샷 적용 중... (${(snapshot.byteLength / 1024 / 1024).toFixed(2)}MB)`)
         try {
           const beforeSize = instance.messagesMap.size
           Y.applyUpdate(instance.doc, snapshot)
@@ -422,22 +444,27 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
           console.log(`  - 이전 메시지: ${beforeSize}개`)
           console.log(`  - 현재 메시지: ${afterSize}개`)
           console.log(`  - 추가된 메시지: ${addedMessages}개`)
+          instance._setInitialSyncState(true, `메시지 ${afterSize}개 동기화 완료`)
 
           // 적용 후 UI 업데이트 대기
           await new Promise(resolve => setTimeout(resolve, 100))
         } catch (error) {
           console.error('[#3-5] ❌ 초기 스냅샷 적용 실패:', error)
+          instance._setInitialSyncState(true, '스냅샷 적용 실패')
         }
       } else {
         console.log('[#3-4] 초기 스냅샷 없음 - 빈 채팅방')
+        instance._setInitialSyncState(true, '새 채팅방입니다')
       }
 
       // 🔥 초기 상태 받은 후 y-webrtc 연결 (증분 동기화용)
       console.log('[#3-6] y-webrtc 연결 시작 (증분 동기화)')
+      instance._setInitialSyncState(true, 'P2P 연결 중...')
       instance.provider.connect()
     } else {
       // 🔥 기존 사용자: y-webrtc 증분 동기화
       console.log('[#3-3] 기존 데이터 있음 - y-webrtc 증분 동기화 시작')
+      instance._setInitialSyncState(true, '기존 데이터 동기화 중...')
       instance.provider.connect()
     }
 
@@ -446,7 +473,15 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
 
     // y-webrtc 동기화 대기
     console.log('[#3-7] y-webrtc 동기화 대기')
+    instance._setInitialSyncState(true, 'P2P 동기화 대기 중...')
     await waitForSync(instance.provider)
+
+    // 🔥 초기 동기화 완료
+    instance._setInitialSyncState(false, '')
+    console.log('[#3-8] ✅ 초기 동기화 완료')
+  } else {
+    // userUuid가 없으면 초기 동기화 스킵
+    instance._setInitialSyncState(false, '')
   }
 
   return instance

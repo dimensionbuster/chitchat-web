@@ -1,7 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
 import Home from '../pages/Home.vue'
-import ChatRoom from '../pages/ChatRoom.vue'
+import ChatRoomWrapper from '../pages/ChatRoomWrapper.vue'
 import Notification from '../pages/Notification.vue'
 import Dialog from '../pages/Dialog.vue'
 import Settings from '../pages/Settings.vue'
@@ -18,7 +18,7 @@ const router = createRouter({
     {
       path: '/chat',
       name: 'ChatRoom',
-      component: ChatRoom,
+      component: ChatRoomWrapper,
       props: (route) => ({
         roomId: (route.query.roomId as string) || 'default-room',
         name: (route.query.name as string) || '',

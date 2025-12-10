@@ -1,10 +1,11 @@
 /**
- * useInitialSync v3
+ * useWatchPartyInitialSync
  *
+ * WatchParty 전용 초기 동기화 composable
  * 시그널링 서버를 통해 WebRTC 연결을 수립하고,
- * 브라우저 간 직접 DataChannel로 초기 상태 전송
+ * 브라우저 간 직접 DataChannel로 Y.Doc 스냅샷 전송
  *
- * Refactored based on useDirectFileTransfer patterns
+ * Based on useInitialSync.v3.ts patterns
  */
 
 import * as Y from 'yjs'
@@ -35,14 +36,14 @@ const ICE_SERVERS: RTCIceServer[] = [
 /**
  * 시그널링 메시지 타입 (시그널링 서버를 통해서만 전송)
  */
-type SyncRequestMessage = {
-  messageType: 'sync-request'
+type WPSyncRequestMessage = {
+  messageType: 'wp-sync-request'
   requesterUuid: string
   timestamp: number
 }
 
-type SyncOfferMessage = {
-  messageType: 'sync-offer'
+type WPSyncOfferMessage = {
+  messageType: 'wp-sync-offer'
   senderUuid: string
   targetUuid: string
   totalChunks: number
@@ -51,23 +52,23 @@ type SyncOfferMessage = {
   timestamp: number
 }
 
-type SyncAnswerMessage = {
-  messageType: 'sync-answer'
+type WPSyncAnswerMessage = {
+  messageType: 'wp-sync-answer'
   receiverUuid: string
   targetUuid: string
   sdp: RTCSessionDescriptionInit
   timestamp: number
 }
 
-type SyncIceMessage = {
-  messageType: 'sync-ice'
+type WPSyncIceMessage = {
+  messageType: 'wp-sync-ice'
   fromUuid: string
   toUuid: string
   candidate: RTCIceCandidateInit
   timestamp: number
 }
 
-type SignalingMessage = SyncRequestMessage | SyncOfferMessage | SyncAnswerMessage | SyncIceMessage
+type SignalingMessage = WPSyncRequestMessage | WPSyncOfferMessage | WPSyncAnswerMessage | WPSyncIceMessage
 
 /**
  * DataChannel 메시지 타입 (브라우저 간 직접 전송)
@@ -113,7 +114,7 @@ class ResourceManager {
       try {
         fn()
       } catch (error) {
-        console.warn('[InitialSync:ResourceManager] Cleanup error:', error)
+        console.warn('[WPInitialSync:ResourceManager] Cleanup error:', error)
       }
     })
     this.cleanupFns = []
@@ -215,7 +216,7 @@ class SnapshotSender {
           }
         }
       } catch (error) {
-        console.warn('[InitialSync:Sender] Message parse error:', error)
+        console.warn('[WPInitialSync:Sender] Message parse error:', error)
       }
     }
 
@@ -250,7 +251,7 @@ class SnapshotSender {
 
         if ((this.currentChunkIndex % 50 === 0) || this.currentChunkIndex === this.totalChunks) {
           const progress = ((this.currentChunkIndex / this.totalChunks) * 100).toFixed(0)
-          console.log(`[InitialSync:Sender] Progress: ${this.currentChunkIndex}/${this.totalChunks} (${progress}%)`)
+          console.log(`[WPInitialSync:Sender] Progress: ${this.currentChunkIndex}/${this.totalChunks} (${progress}%)`)
         }
 
         // Periodic ACK request
@@ -283,7 +284,7 @@ class SnapshotSender {
           }
         }
       } catch (error) {
-        console.warn('[InitialSync:Sender] ACK handler error:', error)
+        console.warn('[WPInitialSync:Sender] ACK handler error:', error)
       }
     }
 
@@ -305,7 +306,7 @@ class SnapshotSender {
         await this.sleep(1000)
 
         if (currentChunkIndex - this.confirmedNextChunk >= ACK_WINDOW) {
-          console.warn('[InitialSync:Sender] ACK timeout, backtracking')
+          console.warn('[WPInitialSync:Sender] ACK timeout, backtracking')
           break
         }
       }
@@ -365,7 +366,7 @@ class SnapshotSender {
           reRequestReceived = true
         }
       } catch (error) {
-        console.warn('[InitialSync:Sender] ReRequest handler error:', error)
+        console.warn('[WPInitialSync:Sender] ReRequest handler error:', error)
       }
     }
 
@@ -396,12 +397,12 @@ class SnapshotSender {
 
       // No reRequest means success
       if (!reRequestReceived || missingChunks.length === 0) {
-        console.log('[InitialSync:Sender] Transfer completed successfully')
+        console.log('[WPInitialSync:Sender] Transfer completed successfully')
         return
       }
 
       // Resend missing chunks
-      console.log(`[InitialSync:Sender] Resending ${missingChunks.length} chunks`)
+      console.log(`[WPInitialSync:Sender] Resending ${missingChunks.length} chunks`)
       for (const chunkIndex of missingChunks) {
         this.checkAbort()
         await this.sendChunk(channel, chunkIndex)
@@ -411,7 +412,7 @@ class SnapshotSender {
     }
 
     if (retryCount >= MAX_RETRIES) {
-      console.warn('[InitialSync:Sender] Max retries reached, forcing completion')
+      console.warn('[WPInitialSync:Sender] Max retries reached, forcing completion')
     }
   }
 
@@ -422,7 +423,7 @@ class SnapshotSender {
       const msg: RequestAckMessage = { type: 'request-ack' }
       channel.send(JSON.stringify(msg))
     } catch (error) {
-      console.warn('[InitialSync:Sender] ACK request failed:', error)
+      console.warn('[WPInitialSync:Sender] ACK request failed:', error)
     }
   }
 
@@ -539,7 +540,7 @@ class SnapshotReceiver {
             resolve()
           }
         } catch (error) {
-          console.warn('[InitialSync:Receiver] Handshake message parse error:', error)
+          console.warn('[WPInitialSync:Receiver] Handshake message parse error:', error)
         }
       }
 
@@ -622,7 +623,7 @@ class SnapshotReceiver {
       if (this.state === 'completed') return
 
       if (Date.now() - this.lastChunkReceiveTime > RECEIVE_TIMEOUT) {
-        console.error('[InitialSync:Receiver] Receive timeout')
+        console.error('[WPInitialSync:Receiver] Receive timeout')
         this.abort()
       }
     }, 5000)
@@ -647,7 +648,7 @@ class SnapshotReceiver {
         resolveOnce(new Error(msg.message))
       }
     } catch (error) {
-      console.warn('[InitialSync:Receiver] Control message error:', error)
+      console.warn('[WPInitialSync:Receiver] Control message error:', error)
     }
   }
 
@@ -659,7 +660,7 @@ class SnapshotReceiver {
     const chunkIndex = view.getUint32(0, true)
 
     if (chunkIndex < 0 || chunkIndex >= this.expectedTotalChunks) {
-      console.warn(`[InitialSync:Receiver] Invalid chunk index: ${chunkIndex}`)
+      console.warn(`[WPInitialSync:Receiver] Invalid chunk index: ${chunkIndex}`)
       return
     }
 
@@ -673,17 +674,12 @@ class SnapshotReceiver {
 
       if ((this.receivedChunks.size % 50 === 0) || this.receivedChunks.size === this.expectedTotalChunks) {
         const progress = ((this.receivedChunks.size / this.expectedTotalChunks) * 100).toFixed(0)
-        console.log(`[InitialSync:Receiver] Progress: ${this.receivedChunks.size}/${this.expectedTotalChunks} (${progress}%)`)
+        console.log(`[WPInitialSync:Receiver] Progress: ${this.receivedChunks.size}/${this.expectedTotalChunks} (${progress}%)`)
       }
     }
 
     // Always send ACK
     this.sendAck(channel)
-
-    // Check if complete
-    if (this.receivedChunks.size === this.expectedTotalChunks) {
-      // Don't resolve here, wait for complete message
-    }
   }
 
   private async handleComplete(
@@ -700,7 +696,7 @@ class SnapshotReceiver {
 
     // Request missing chunks
     if (missingChunks.length > 0 && channel.readyState === 'open') {
-      console.log(`[InitialSync:Receiver] Requesting ${missingChunks.length} missing chunks`)
+      console.log(`[WPInitialSync:Receiver] Requesting ${missingChunks.length} missing chunks`)
 
       const reRequestMsg: ReRequestMessage = {
         type: 'reRequest',
@@ -726,10 +722,10 @@ class SnapshotReceiver {
 
       const finalSnapshot = offset === this.expectedSnapshotSize ? merged : merged.slice(0, offset)
 
-      console.log('[InitialSync:Receiver] Snapshot merged successfully')
+      console.log('[WPInitialSync:Receiver] Snapshot merged successfully')
       resolveOnce(finalSnapshot)
     } catch (error) {
-      console.error('[InitialSync:Receiver] Snapshot merge failed:', error)
+      console.error('[WPInitialSync:Receiver] Snapshot merge failed:', error)
       resolveOnce(error instanceof Error ? error : new Error(String(error)))
     }
   }
@@ -752,7 +748,7 @@ class SnapshotReceiver {
 
       channel.send(JSON.stringify(ackMsg))
     } catch (error) {
-      console.warn('[InitialSync:Receiver] ACK send failed:', error)
+      console.warn('[WPInitialSync:Receiver] ACK send failed:', error)
     }
   }
 
@@ -779,24 +775,24 @@ class WebRTCManager {
     this.peerConnection = this.createPeerConnection()
 
     // Create DataChannel
-    this.dataChannel = this.peerConnection.createDataChannel('initial-sync', {
+    this.dataChannel = this.peerConnection.createDataChannel('wp-initial-sync', {
       ordered: true,
       maxRetransmits: 3
     })
 
     this.dataChannel.onopen = () => {
-      console.log('[InitialSync:WebRTC] DataChannel opened')
+      console.log('[WPInitialSync:WebRTC] DataChannel opened')
       if (this.dataChannel) {
         onChannelOpen(this.dataChannel)
       }
     }
 
     this.dataChannel.onerror = (error) => {
-      console.error('[InitialSync:WebRTC] DataChannel error:', error)
+      console.error('[WPInitialSync:WebRTC] DataChannel error:', error)
     }
 
     this.dataChannel.onclose = () => {
-      console.log('[InitialSync:WebRTC] DataChannel closed')
+      console.log('[WPInitialSync:WebRTC] DataChannel closed')
     }
 
     // Create offer
@@ -804,8 +800,8 @@ class WebRTCManager {
     await this.peerConnection.setLocalDescription(offer)
 
     // Send offer via signaling
-    const offerMessage: SyncOfferMessage = {
-      messageType: 'sync-offer',
+    const offerMessage: WPSyncOfferMessage = {
+      messageType: 'wp-sync-offer',
       senderUuid: this.myUuid,
       targetUuid: this.targetUuid,
       totalChunks: 0, // Will be set by sender
@@ -815,11 +811,11 @@ class WebRTCManager {
     }
 
     this.signaling.publish(this.syncTopic, offerMessage as unknown as Record<string, unknown>)
-    console.log('[InitialSync:WebRTC] Offer sent')
+    console.log('[WPInitialSync:WebRTC] Offer sent')
   }
 
   async createAnswerConnection(
-    offer: SyncOfferMessage,
+    offer: WPSyncOfferMessage,
     onChannelReceived: (channel: RTCDataChannel) => void
   ): Promise<void> {
     this.peerConnection = this.createPeerConnection()
@@ -827,21 +823,21 @@ class WebRTCManager {
     // Handle incoming DataChannel
     this.peerConnection.ondatachannel = (event) => {
       this.dataChannel = event.channel
-      console.log('[InitialSync:WebRTC] DataChannel received')
+      console.log('[WPInitialSync:WebRTC] DataChannel received')
 
       this.dataChannel.onopen = () => {
-        console.log('[InitialSync:WebRTC] DataChannel opened')
+        console.log('[WPInitialSync:WebRTC] DataChannel opened')
         if (this.dataChannel) {
           onChannelReceived(this.dataChannel)
         }
       }
 
       this.dataChannel.onerror = (error) => {
-        console.error('[InitialSync:WebRTC] DataChannel error:', error)
+        console.error('[WPInitialSync:WebRTC] DataChannel error:', error)
       }
 
       this.dataChannel.onclose = () => {
-        console.log('[InitialSync:WebRTC] DataChannel closed')
+        console.log('[WPInitialSync:WebRTC] DataChannel closed')
       }
     }
 
@@ -853,8 +849,8 @@ class WebRTCManager {
     await this.peerConnection.setLocalDescription(answer)
 
     // Send answer via signaling
-    const answerMessage: SyncAnswerMessage = {
-      messageType: 'sync-answer',
+    const answerMessage: WPSyncAnswerMessage = {
+      messageType: 'wp-sync-answer',
       receiverUuid: this.myUuid,
       targetUuid: offer.senderUuid,
       sdp: answer,
@@ -862,20 +858,20 @@ class WebRTCManager {
     }
 
     this.signaling.publish(this.syncTopic, answerMessage as unknown as Record<string, unknown>)
-    console.log('[InitialSync:WebRTC] Answer sent')
+    console.log('[WPInitialSync:WebRTC] Answer sent')
 
     // Add pending ICE candidates
     this.addPendingIceCandidates()
   }
 
-  async handleAnswer(answer: SyncAnswerMessage): Promise<void> {
+  async handleAnswer(answer: WPSyncAnswerMessage): Promise<void> {
     if (!this.peerConnection) {
-      console.warn('[InitialSync:WebRTC] No peer connection for answer')
+      console.warn('[WPInitialSync:WebRTC] No peer connection for answer')
       return
     }
 
     await this.peerConnection.setRemoteDescription(answer.sdp)
-    console.log('[InitialSync:WebRTC] Answer processed')
+    console.log('[WPInitialSync:WebRTC] Answer processed')
 
     // Add pending ICE candidates
     this.addPendingIceCandidates()
@@ -894,8 +890,8 @@ class WebRTCManager {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        const iceMessage: SyncIceMessage = {
-          messageType: 'sync-ice',
+        const iceMessage: WPSyncIceMessage = {
+          messageType: 'wp-sync-ice',
           fromUuid: this.myUuid,
           toUuid: this.targetUuid,
           candidate: event.candidate.toJSON(),
@@ -906,11 +902,11 @@ class WebRTCManager {
     }
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`[InitialSync:WebRTC] ICE state: ${pc.iceConnectionState}`)
+      console.log(`[WPInitialSync:WebRTC] ICE state: ${pc.iceConnectionState}`)
     }
 
     pc.onconnectionstatechange = () => {
-      console.log(`[InitialSync:WebRTC] Connection state: ${pc.connectionState}`)
+      console.log(`[WPInitialSync:WebRTC] Connection state: ${pc.connectionState}`)
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.cleanup()
       }
@@ -921,7 +917,7 @@ class WebRTCManager {
 
   private addPendingIceCandidates(): void {
     if (this.pendingIceCandidates.length > 0) {
-      console.log(`[InitialSync:WebRTC] Adding ${this.pendingIceCandidates.length} pending ICE candidates`)
+      console.log(`[WPInitialSync:WebRTC] Adding ${this.pendingIceCandidates.length} pending ICE candidates`)
       this.pendingIceCandidates.forEach((candidate) => {
         this.peerConnection?.addIceCandidate(candidate).catch(console.error)
       })
@@ -952,13 +948,13 @@ class WebRTCManager {
 }
 
 // ===== Main Composable =====
-export function useInitialSync(
+export function useWatchPartyInitialSync(
   signaling: ReturnType<typeof useSignalingServer>,
   myUuid: string,
   doc: Y.Doc,
   roomId: string
 ) {
-  const syncTopic = `room-${roomId}-sync`
+  const syncTopic = `watchparty-${roomId}-sync`
   let webrtcManager: WebRTCManager | null = null
   let currentSender: SnapshotSender | null = null
   let currentReceiver: SnapshotReceiver | null = null
@@ -972,17 +968,17 @@ export function useInitialSync(
     const msg = message as unknown as SignalingMessage
 
     switch (msg.messageType) {
-      case 'sync-request':
-        handleSyncRequest(msg as SyncRequestMessage)
+      case 'wp-sync-request':
+        handleSyncRequest(msg as WPSyncRequestMessage)
         break
-      case 'sync-offer':
-        handleSyncOffer(msg as SyncOfferMessage)
+      case 'wp-sync-offer':
+        handleSyncOffer(msg as WPSyncOfferMessage)
         break
-      case 'sync-answer':
-        handleSyncAnswer(msg as SyncAnswerMessage)
+      case 'wp-sync-answer':
+        handleSyncAnswer(msg as WPSyncAnswerMessage)
         break
-      case 'sync-ice':
-        handleSyncIce(msg as SyncIceMessage)
+      case 'wp-sync-ice':
+        handleSyncIce(msg as WPSyncIceMessage)
         break
     }
   }
@@ -991,28 +987,28 @@ export function useInitialSync(
    * 초기 동기화 요청 (새 접속자)
    */
   async function requestInitialSync(): Promise<Uint8Array | null> {
-    console.log('[InitialSync] 🔄 Requesting initial sync')
-    console.log(`[InitialSync] - My UUID: ${myUuid.slice(-8)}`)
-    console.log(`[InitialSync] - Topic: ${syncTopic}`)
+    console.log('[WPInitialSync] 🔄 Requesting initial sync')
+    console.log(`[WPInitialSync] - My UUID: ${myUuid.slice(-8)}`)
+    console.log(`[WPInitialSync] - Topic: ${syncTopic}`)
 
     // Subscribe to topic
     signaling.subscribe([syncTopic])
     signaling.on(syncTopic, handleSignalingMessage)
 
     // Wait for subscription to propagate
-    console.log('[InitialSync] ⏳ Waiting for subscription to propagate (1s)...')
+    console.log('[WPInitialSync] ⏳ Waiting for subscription to propagate (1s)...')
     await sleep(1000)
 
     // Send request
-    const request: SyncRequestMessage = {
-      messageType: 'sync-request',
+    const request: WPSyncRequestMessage = {
+      messageType: 'wp-sync-request',
       requesterUuid: myUuid,
       timestamp: Date.now()
     }
 
-    console.log('[InitialSync] 📤 Publishing request')
+    console.log('[WPInitialSync] 📤 Publishing request')
     signaling.publish(syncTopic, request as unknown as Record<string, unknown>)
-    console.log(`[InitialSync] ⏳ Waiting for response (timeout: ${REQUEST_TIMEOUT}ms)...`)
+    console.log(`[WPInitialSync] ⏳ Waiting for response (timeout: ${REQUEST_TIMEOUT}ms)...`)
 
     // Wait for offer
     return new Promise<Uint8Array | null>((resolve, reject) => {
@@ -1021,7 +1017,7 @@ export function useInitialSync(
 
       const timeoutId = setTimeout(() => {
         if (syncResolve) {
-          console.warn('[InitialSync] ⏰ Request timeout - starting with empty room')
+          console.warn('[WPInitialSync] ⏰ Request timeout - starting with empty room')
           cleanup()
           resolve(null)
           syncResolve = null
@@ -1046,17 +1042,17 @@ export function useInitialSync(
   /**
    * 동기화 요청 처리 (기존 피어)
    */
-  async function handleSyncRequest(request: SyncRequestMessage) {
-    console.log(`[InitialSync] 📥 Sync request received from ${request.requesterUuid.slice(-8)}`)
+  async function handleSyncRequest(request: WPSyncRequestMessage) {
+    console.log(`[WPInitialSync] 📥 Sync request received from ${request.requesterUuid.slice(-8)}`)
 
     if (request.requesterUuid === myUuid) {
-      console.log('[InitialSync] ↩️ Ignoring own request')
+      console.log('[WPInitialSync] ↩️ Ignoring own request')
       return
     }
 
     // Ignore if already handling a transfer
     if (webrtcManager || currentSender) {
-      console.warn('[InitialSync] ⚠️ Already handling transfer - ignoring request')
+      console.warn('[WPInitialSync] ⚠️ Already handling transfer - ignoring request')
       return
     }
 
@@ -1065,15 +1061,15 @@ export function useInitialSync(
       const snapshot = Y.encodeStateAsUpdate(doc)
       const snapshotSize = snapshot.byteLength
 
-      console.log(`[InitialSync] 📦 Snapshot created: ${(snapshotSize / 1024).toFixed(2)}KB`)
+      console.log(`[WPInitialSync] 📦 Snapshot created: ${(snapshotSize / 1024).toFixed(2)}KB`)
 
       if (snapshotSize === 0) {
-        console.warn('[InitialSync] ⚠️ Empty snapshot - not responding')
+        console.warn('[WPInitialSync] ⚠️ Empty snapshot - not responding')
         return
       }
 
       const totalChunks = Math.ceil(snapshotSize / CHUNK_SIZE)
-      console.log(`[InitialSync] - Total chunks: ${totalChunks}`)
+      console.log(`[WPInitialSync] - Total chunks: ${totalChunks}`)
 
       // Create sender
       currentSender = new SnapshotSender(snapshot, totalChunks, snapshotSize)
@@ -1085,10 +1081,10 @@ export function useInitialSync(
         try {
           if (currentSender) {
             await currentSender.send(channel)
-            console.log('[InitialSync] ✅ Transfer completed')
+            console.log('[WPInitialSync] ✅ Transfer completed')
           }
         } catch (error) {
-          console.error('[InitialSync] ❌ Transfer failed:', error)
+          console.error('[WPInitialSync] ❌ Transfer failed:', error)
         } finally {
           setTimeout(() => {
             cleanup()
@@ -1096,7 +1092,7 @@ export function useInitialSync(
         }
       })
     } catch (error) {
-      console.error('[InitialSync] ❌ Failed to handle sync request:', error)
+      console.error('[WPInitialSync] ❌ Failed to handle sync request:', error)
       cleanup()
     }
   }
@@ -1104,23 +1100,23 @@ export function useInitialSync(
   /**
    * Offer 처리 (수신자)
    */
-  async function handleSyncOffer(offer: SyncOfferMessage) {
-    console.log(`[InitialSync] 📥 Offer received from ${offer.senderUuid.slice(-8)}`)
+  async function handleSyncOffer(offer: WPSyncOfferMessage) {
+    console.log(`[WPInitialSync] 📥 Offer received from ${offer.senderUuid.slice(-8)}`)
 
     if (offer.targetUuid !== myUuid) {
-      console.log('[InitialSync] ↩️ Ignoring offer for different peer')
+      console.log('[WPInitialSync] ↩️ Ignoring offer for different peer')
       return
     }
 
     // Ignore if already receiving
     if (webrtcManager || currentReceiver) {
-      console.warn('[InitialSync] ⚠️ Already receiving - ignoring offer')
+      console.warn('[WPInitialSync] ⚠️ Already receiving - ignoring offer')
       return
     }
 
-    console.log('[InitialSync] ✅ Accepting offer')
-    console.log(`[InitialSync] - Size: ${(offer.snapshotSize / 1024).toFixed(2)}KB`)
-    console.log(`[InitialSync] - Chunks: ${offer.totalChunks}`)
+    console.log('[WPInitialSync] ✅ Accepting offer')
+    console.log(`[WPInitialSync] - Size: ${(offer.snapshotSize / 1024).toFixed(2)}KB`)
+    console.log(`[WPInitialSync] - Chunks: ${offer.totalChunks}`)
 
     try {
       // Create receiver
@@ -1133,7 +1129,7 @@ export function useInitialSync(
         try {
           if (currentReceiver) {
             const snapshot = await currentReceiver.receive(channel)
-            console.log('[InitialSync] ✅ Snapshot received successfully')
+            console.log('[WPInitialSync] ✅ Snapshot received successfully')
 
             if (syncResolve) {
               syncResolve(snapshot)
@@ -1142,7 +1138,7 @@ export function useInitialSync(
             }
           }
         } catch (error) {
-          console.error('[InitialSync] ❌ Receive failed:', error)
+          console.error('[WPInitialSync] ❌ Receive failed:', error)
           if (syncReject) {
             syncReject(error instanceof Error ? error : new Error(String(error)))
             syncResolve = null
@@ -1155,7 +1151,7 @@ export function useInitialSync(
         }
       })
     } catch (error) {
-      console.error('[InitialSync] ❌ Failed to handle offer:', error)
+      console.error('[WPInitialSync] ❌ Failed to handle offer:', error)
       if (syncReject) {
         syncReject(error instanceof Error ? error : new Error(String(error)))
         syncResolve = null
@@ -1168,33 +1164,33 @@ export function useInitialSync(
   /**
    * Answer 처리 (송신자)
    */
-  async function handleSyncAnswer(answer: SyncAnswerMessage) {
-    console.log(`[InitialSync] 📥 Answer received from ${answer.receiverUuid.slice(-8)}`)
+  async function handleSyncAnswer(answer: WPSyncAnswerMessage) {
+    console.log(`[WPInitialSync] 📥 Answer received from ${answer.receiverUuid.slice(-8)}`)
 
     if (answer.targetUuid !== myUuid) {
-      console.log('[InitialSync] ↩️ Ignoring answer for different peer')
+      console.log('[WPInitialSync] ↩️ Ignoring answer for different peer')
       return
     }
 
     if (!webrtcManager) {
-      console.warn('[InitialSync] ⚠️ No WebRTC manager - ignoring answer')
+      console.warn('[WPInitialSync] ⚠️ No WebRTC manager - ignoring answer')
       return
     }
 
-    console.log('[InitialSync] ✅ Processing answer')
+    console.log('[WPInitialSync] ✅ Processing answer')
 
     try {
       await webrtcManager.handleAnswer(answer)
-      console.log('[InitialSync] ✅ Answer processed successfully')
+      console.log('[WPInitialSync] ✅ Answer processed successfully')
     } catch (error) {
-      console.error('[InitialSync] ❌ Failed to process answer:', error)
+      console.error('[WPInitialSync] ❌ Failed to process answer:', error)
     }
   }
 
   /**
    * ICE candidate 처리
    */
-  function handleSyncIce(ice: SyncIceMessage) {
+  function handleSyncIce(ice: WPSyncIceMessage) {
     if (ice.toUuid !== myUuid) return
 
     if (webrtcManager) {
@@ -1206,7 +1202,7 @@ export function useInitialSync(
    * 정리 (연결만 정리, 리스너는 유지)
    */
   function cleanup() {
-    console.log('[InitialSync] 🧹 Cleaning up connections')
+    console.log('[WPInitialSync] 🧹 Cleaning up connections')
 
     if (currentSender) {
       currentSender.abort()
@@ -1228,7 +1224,7 @@ export function useInitialSync(
    * 완전 정리 (리스너까지 제거)
    */
   function dispose() {
-    console.log('[InitialSync] 🗑️ Disposing all resources')
+    console.log('[WPInitialSync] 🗑️ Disposing all resources')
     signaling.off(syncTopic, handleSignalingMessage)
     cleanup()
   }
@@ -1237,15 +1233,15 @@ export function useInitialSync(
    * 기존 피어로 초기화 (요청 리스너 등록)
    */
   function initializeAsProvider() {
-    console.log('[InitialSync] 📡 Initializing as provider')
-    console.log(`[InitialSync] - My UUID: ${myUuid.slice(-8)}`)
-    console.log(`[InitialSync] - Topic: ${syncTopic}`)
+    console.log('[WPInitialSync] 📡 Initializing as provider')
+    console.log(`[WPInitialSync] - My UUID: ${myUuid.slice(-8)}`)
+    console.log(`[WPInitialSync] - Topic: ${syncTopic}`)
 
     // Subscribe to topic
     signaling.subscribe([syncTopic])
     signaling.on(syncTopic, handleSignalingMessage)
 
-    console.log('[InitialSync] ✅ Listener registered - waiting for requests')
+    console.log('[WPInitialSync] ✅ Listener registered - waiting for requests')
   }
 
   function sleep(ms: number): Promise<void> {

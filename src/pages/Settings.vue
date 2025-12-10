@@ -31,7 +31,6 @@ const {
 const {
   volume: notificationVolume,
   isEnabled: notificationEnabled,
-  customSoundUrl,
   hasCustomSound,
   isElectron: soundIsElectron,
   setVolume: setNotificationVolume,
@@ -113,11 +112,6 @@ async function clearBackground(type: BackgroundType) {
   } catch (e) {
     console.error(`Failed to clear ${type} background:`, e)
   }
-}
-
-// Close settings window
-function closeSettings() {
-  window.close()
 }
 
 // Notification sound functions

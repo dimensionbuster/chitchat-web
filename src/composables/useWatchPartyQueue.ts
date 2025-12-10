@@ -360,20 +360,6 @@ export function useWatchPartyQueue(doc: Y.Doc, currentUserId: string, currentUse
       }
     }
 
-    // 디버그 로그: 글로벌 큐 순서 출력
-    console.log(`[WatchPartyQueue] GlobalQueue (${result.length} items):`)
-    console.log(`  activeUsers order: [${users.join(', ')}]`)
-    console.log(`  userStartRounds: ${JSON.stringify(Object.fromEntries(userStartRound.value))}`)
-    console.log(`  currentPlayingUserId: ${currentPlayingUserId.value}`)
-    console.log(`  currentItemIndex: ${currentItemIndex.value}`)
-    result.forEach((item, idx) => {
-      const ownerUserId = Array.from(userQueues.value.entries())
-        .find(([, queue]) => queue.some(q => q.videoId === item.videoId))?.[0] || 'unknown'
-      const ownerName = userNames.value.get(ownerUserId) || ownerUserId.replace('user-', '').slice(0, 8)
-      const startRound = userStartRound.value.get(ownerUserId) || 0
-      console.log(`  ${idx}: ${item.videoId.slice(0, 8)}... by ${ownerName} (startRound: ${startRound})`)
-    })
-
     return result
   })
 
