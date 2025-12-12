@@ -5,13 +5,26 @@ import { useRouter } from 'vue-router'
 import { useProfilePicture } from '@/composables/useProfilePicture'
 import { useBackgroundImage } from '@/composables/useBackgroundImage'
 import { useStyleSettings } from '@/composables/useStyleSettings'
-import { showAlert } from '@/composables/useCustomDialog'
+import { showConfirm } from '@/composables/useCustomDialog'
 import ProfilePictureUpload from '@/components/profile/ProfilePictureUpload.vue'
+import RoomModal from '@/components/home/RoomModal.vue'
 
 const router = useRouter()
 
-const roomId = ref(localStorage.getItem('roomId') || '')
-const name = ref(localStorage.getItem('name') || '')
+// 저장된 방 목록 타입
+interface SavedRoom {
+  roomId: string
+  nickname: string
+  lastVisited: number
+}
+
+const ROOMS_STORAGE_KEY = 'chitchat_saved_rooms'
+
+// 상태
+const savedRooms = ref<SavedRoom[]>([])
+const showAddModal = ref(false)
+const editingRoom = ref<SavedRoom | null>(null)
+
 const appVersion = ref('')
 const updateCheckMessage = ref('')
 const isCheckingUpdate = ref(false)
@@ -53,31 +66,117 @@ const backgroundStyle = computed(() => {
   return {}
 })
 
+// 방 목록 로드
+const loadSavedRooms = () => {
+  try {
+    const stored = localStorage.getItem(ROOMS_STORAGE_KEY)
+    if (stored) {
+      savedRooms.value = JSON.parse(stored)
+      savedRooms.value.sort((a, b) => b.lastVisited - a.lastVisited)
+    }
+  } catch (e) {
+    console.error('방 목록 로드 실패:', e)
+  }
+}
+
+// 방 목록 저장
+const saveRoomsList = () => {
+  try {
+    localStorage.setItem(ROOMS_STORAGE_KEY, JSON.stringify(savedRooms.value))
+  } catch (e) {
+    console.error('방 목록 저장 실패:', e)
+  }
+}
+
+// 기본 닉네임 (localStorage 접근용 computed)
+const defaultNickname = computed(() => {
+  try {
+    return localStorage.getItem('name') || ''
+  } catch {
+    return ''
+  }
+})
+
+// 방 추가/수정 모달 열기
+const openAddModal = (room?: SavedRoom) => {
+  editingRoom.value = room || null
+  showAddModal.value = true
+}
+
+// 방 저장 (모달에서 호출)
+const handleSaveRoom = (roomId: string, nickname: string) => {
+  localStorage.setItem('name', nickname)
+
+  if (editingRoom.value) {
+    const index = savedRooms.value.findIndex(r =>
+      r.roomId === editingRoom.value!.roomId &&
+      r.nickname === editingRoom.value!.nickname
+    )
+    if (index !== -1) {
+      savedRooms.value[index] = { roomId, nickname, lastVisited: editingRoom.value.lastVisited }
+    }
+  } else {
+    const exists = savedRooms.value.find(r => r.roomId === roomId && r.nickname === nickname)
+    if (!exists) {
+      savedRooms.value.unshift({ roomId, nickname, lastVisited: Date.now() })
+    }
+  }
+
+  saveRoomsList()
+  showAddModal.value = false
+}
+
+// 방 삭제
+const deleteRoom = async (room: SavedRoom) => {
+  const confirmed = await showConfirm(`"${room.roomId}" 방을 삭제하시겠습니까?`)
+  if (confirmed) {
+    savedRooms.value = savedRooms.value.filter(r =>
+      !(r.roomId === room.roomId && r.nickname === room.nickname)
+    )
+    saveRoomsList()
+  }
+}
+
+// 방 입장
+const joinRoom = (room: SavedRoom) => {
+  localStorage.setItem('name', room.nickname)
+  localStorage.setItem('roomId', room.roomId)
+
+  room.lastVisited = Date.now()
+  saveRoomsList()
+
+  if (window.electronApi) {
+    window.electronApi.openChatRoom(room.roomId, room.nickname || undefined)
+  } else {
+    router.push({ name: 'ChatRoom', query: { roomId: room.roomId, name: room.nickname } })
+  }
+}
+
+// 빠른 입장 (모달에서 호출)
+const handleQuickJoin = (roomId: string, nickname: string) => {
+  localStorage.setItem('name', nickname)
+  localStorage.setItem('roomId', roomId)
+
+  const exists = savedRooms.value.find(r => r.roomId === roomId && r.nickname === nickname)
+  if (!exists) {
+    savedRooms.value.unshift({ roomId, nickname, lastVisited: Date.now() })
+  } else {
+    exists.lastVisited = Date.now()
+  }
+  saveRoomsList()
+
+  showAddModal.value = false
+
+  if (window.electronApi) {
+    window.electronApi.openChatRoom(roomId, nickname || undefined)
+  } else {
+    router.push({ name: 'ChatRoom', query: { roomId, name: nickname } })
+  }
+}
+
 // 설정 창 열기
 const openSettings = () => {
   window.electronApi?.openSettings()
-}
-
-const goChat = async () => {
-  const trimmedRoomId = roomId.value.trim()
-  if (trimmedRoomId === '') {
-    await showAlert('room id is required')
-    return
-  }
-
-  const trimmedName = name.value.trim()
-  localStorage.setItem('name', trimmedName)
-  localStorage.setItem('roomId', trimmedRoomId)
-
-  // Electron 환경에서는 새 창으로 열기
-  if (window.electronApi) {
-    window.electronApi.openChatRoom(trimmedRoomId, trimmedName || undefined)
-  } else {
-    // 웹 환경에서는 라우터로 이동
-    const q: Record<string, string> = { roomId: trimmedRoomId }
-    if (trimmedName) q.name = trimmedName
-    router.push({ name: 'ChatRoom', query: q })
-  }
 }
 
 const checkForUpdates = async () => {
@@ -94,7 +193,6 @@ const checkForUpdates = async () => {
     updateAvailable.value = result.available
     releaseUrl.value = result.releaseUrl || null
 
-    // 업데이트가 없으면 3초 후 메시지 제거
     if (!result.available) {
       setTimeout(() => {
         updateCheckMessage.value = ''
@@ -115,10 +213,9 @@ const openReleaseUrl = () => {
 }
 
 onMounted(async () => {
-  // 로컬 프로필 로드
   await initializeProfilePictures()
+  loadSavedRooms()
 
-  // 앱 버전 가져오기
   if (window.electronApi) {
     try {
       appVersion.value = await window.electronApi.getAppVersion()
@@ -153,33 +250,53 @@ onMounted(async () => {
           />
         </div>
 
-        <!-- 입력 폼 -->
-        <div class="form-section">
-          <label class="input-group">
-            <span class="input-label">Room ID</span>
-            <input
-              v-model="roomId"
-              placeholder="채팅방 ID를 입력하세요"
-              class="text-input"
-            />
-          </label>
+        <!-- 방 목록 섹션 -->
+        <div class="rooms-section">
+          <div class="rooms-header">
+            <h3 class="section-title">저장된 채팅방</h3>
+            <button class="add-room-btn" @click="openAddModal()">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              새 방
+            </button>
+          </div>
 
-          <label class="input-group">
-            <span class="input-label">이름</span>
-            <input
-              v-model="name"
-              placeholder="닉네임을 입력하세요"
-              class="text-input"
-              @keypress.enter="goChat"
-            />
-          </label>
+          <!-- 저장된 방 목록 -->
+          <div v-if="savedRooms.length > 0" class="room-list">
+            <div
+              v-for="room in savedRooms"
+              :key="`${room.roomId}-${room.nickname}`"
+              class="room-item"
+              @click="joinRoom(room)"
+            >
+              <div class="room-info">
+                <div class="room-id">{{ room.roomId }}</div>
+                <span class="room-nickname">{{ room.nickname }}</span>
+              </div>
+              <div class="room-actions">
+                <button class="room-action-btn edit-btn" @click.stop="openAddModal(room)" title="수정">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                  </svg>
+                </button>
+                <button class="room-action-btn delete-btn" @click.stop="deleteRoom(room)" title="삭제">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
 
-          <button @click="goChat" class="enter-button">
-            <span>채팅방 입장</span>
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M5 12h14M12 5l7 7-7 7"/>
-            </svg>
-          </button>
+          <!-- 빈 상태 -->
+          <div v-else class="empty-state">
+            <p>저장된 채팅방이 없습니다</p>
+            <button class="add-first-room-btn" @click="openAddModal()">첫 채팅방 추가하기</button>
+          </div>
         </div>
 
         <!-- 설정 및 업데이트 (Electron 전용) -->
@@ -220,6 +337,16 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <!-- 방 추가/수정 모달 -->
+    <RoomModal
+      :show="showAddModal"
+      :editingRoom="editingRoom"
+      :defaultNickname="defaultNickname"
+      @close="showAddModal = false"
+      @save="handleSaveRoom"
+      @quickJoin="handleQuickJoin"
+    />
   </div>
 </template>
 
@@ -243,7 +370,7 @@ onMounted(async () => {
 
 .home-container {
   width: 100%;
-  max-width: 380px;
+  max-width: 420px;
   position: relative;
   z-index: 1;
 }
@@ -530,5 +657,163 @@ onMounted(async () => {
   font-size: var(--font-size-xs);
   text-align: center;
   font-family: monospace;
+}
+
+/* 방 목록 섹션 */
+.rooms-section {
+  margin-bottom: var(--spacing-md);
+}
+
+.rooms-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+}
+
+.add-room-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.add-room-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(var(--color-primary-rgb), 0.3);
+}
+
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.room-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.room-item:hover {
+  background: var(--color-primary-light);
+  border-color: var(--color-accent);
+}
+
+.room-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.room-id {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: 2px;
+}
+
+.room-nickname {
+  font-size: var(--font-size-xs);
+  color: var(--color-accent);
+}
+
+.room-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.room-item:hover .room-actions {
+  opacity: 1;
+}
+
+.room-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.edit-btn {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.edit-btn:hover {
+  background: var(--color-primary);
+  color: white;
+}
+
+.delete-btn {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.delete-btn:hover {
+  background: #ef4444;
+  color: white;
+}
+
+/* 빈 상태 */
+.empty-state {
+  text-align: center;
+  padding: var(--spacing-lg);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 2px dashed var(--border-default);
+}
+
+.empty-state p {
+  margin: 0 0 var(--spacing-sm);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.add-first-room-btn {
+  padding: var(--spacing-sm) var(--spacing-lg);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.add-first-room-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(var(--color-primary-rgb), 0.4);
 }
 </style>
