@@ -129,12 +129,16 @@ class SnapshotSender {
   private lastProgressTime = Date.now()
   private lastAckRequestTime = Date.now()
   private currentChunkIndex = 0
+  private chunkSize: number
 
   constructor(
     private snapshot: Uint8Array,
     private totalChunks: number,
-    private snapshotSize: number
-  ) {}
+    private snapshotSize: number,
+    chunkSize: number
+  ) {
+    this.chunkSize = chunkSize
+  }
 
   async send(channel: RTCDataChannel): Promise<void> {
     try {
@@ -196,7 +200,7 @@ class SnapshotSender {
       type: 'start',
       totalChunks: this.totalChunks,
       snapshotSize: this.snapshotSize,
-      chunkSize: CHUNK_SIZE
+      chunkSize: this.chunkSize
     }
     channel.send(JSON.stringify(startMsg))
 
@@ -337,8 +341,8 @@ class SnapshotSender {
     }
 
     // Slice and send
-    const chunkStart = chunkIndex * CHUNK_SIZE
-    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, this.snapshotSize)
+    const chunkStart = chunkIndex * this.chunkSize
+    const chunkEnd = Math.min(chunkStart + this.chunkSize, this.snapshotSize)
     const chunkData = this.snapshot.slice(chunkStart, chunkEnd)
 
     // Combine index + data
@@ -452,6 +456,7 @@ class SnapshotReceiver {
   private receivedChunks = new Map<number, ArrayBuffer>()
   private expectedTotalChunks = 0
   private expectedSnapshotSize = 0
+  private senderChunkSize = CHUNK_SIZE // 송신자의 청크 사이즈 (start 메시지에서 받음)
 
   constructor() {}
 
@@ -524,6 +529,9 @@ class SnapshotReceiver {
           if (msg.type === 'start') {
             this.expectedTotalChunks = msg.totalChunks
             this.expectedSnapshotSize = msg.snapshotSize
+            // 송신자의 청크 사이즈 저장 (크로스 플랫폼 호환성)
+            this.senderChunkSize = msg.chunkSize || CHUNK_SIZE
+            console.log(`[InitialSync:Receiver] Start received - totalChunks: ${msg.totalChunks}, snapshotSize: ${msg.snapshotSize}, senderChunkSize: ${this.senderChunkSize}`)
 
             // Send start response
             const response: StartMessage = {
@@ -722,6 +730,11 @@ class SnapshotReceiver {
         }
         merged.set(new Uint8Array(chunk), offset)
         offset += chunk.byteLength
+      }
+
+      // Validate merged size
+      if (offset !== this.expectedSnapshotSize) {
+        console.warn(`[InitialSync:Receiver] Size mismatch - expected: ${this.expectedSnapshotSize}, actual: ${offset}, senderChunkSize: ${this.senderChunkSize}`)
       }
 
       const finalSnapshot = offset === this.expectedSnapshotSize ? merged : merged.slice(0, offset)
@@ -1043,6 +1056,10 @@ export function useInitialSync(
     })
   }
 
+  // 전송 시작 시간 추적
+  let transferStartTime: number | null = null
+  const TRANSFER_STALE_TIMEOUT = 30000 // 30초 후 stale 상태로 간주
+
   /**
    * 동기화 요청 처리 (기존 피어)
    */
@@ -1054,11 +1071,18 @@ export function useInitialSync(
       return
     }
 
-    // Ignore if already handling a transfer
+    // 이전 전송이 stale 상태인지 확인
     if (webrtcManager || currentSender) {
-      console.warn('[InitialSync] ⚠️ Already handling transfer - ignoring request')
-      return
+      if (transferStartTime && Date.now() - transferStartTime > TRANSFER_STALE_TIMEOUT) {
+        console.warn('[InitialSync] ⚠️ Previous transfer is stale - cleaning up')
+        cleanup()
+      } else {
+        console.warn('[InitialSync] ⚠️ Already handling transfer - ignoring request')
+        return
+      }
     }
+
+    transferStartTime = Date.now()
 
     try {
       // Create snapshot
@@ -1073,10 +1097,10 @@ export function useInitialSync(
       }
 
       const totalChunks = Math.ceil(snapshotSize / CHUNK_SIZE)
-      console.log(`[InitialSync] - Total chunks: ${totalChunks}`)
+      console.log(`[InitialSync] - Total chunks: ${totalChunks}, chunkSize: ${CHUNK_SIZE}`)
 
       // Create sender
-      currentSender = new SnapshotSender(snapshot, totalChunks, snapshotSize)
+      currentSender = new SnapshotSender(snapshot, totalChunks, snapshotSize, CHUNK_SIZE)
 
       // Create WebRTC connection
       webrtcManager = new WebRTCManager(signaling, myUuid, request.requesterUuid, syncTopic)
@@ -1207,6 +1231,8 @@ export function useInitialSync(
    */
   function cleanup() {
     console.log('[InitialSync] 🧹 Cleaning up connections')
+
+    transferStartTime = null
 
     if (currentSender) {
       currentSender.abort()
