@@ -418,55 +418,47 @@ export async function useYjs(roomId = ROOM_ID, userUuid?: string, nickname?: str
     // 🔥 항상 요청 리스너 등록 (새 접속자의 요청에 응답하기 위해)
     initializeAsProvider()
 
-    // 🔥 doc이 비어있는지 확인 (새 접속자 판단)
-    const isNewUser = instance.messagesMap.size === 0
+    // 🔥 현재 보유 중인 메시지 수 로깅
+    const currentMessageCount = instance.messagesMap.size
+    console.log(`[#3-2] 초기화 상태: 메시지 ${currentMessageCount}개 보유`)
 
-    console.log(`[#3-2] 초기화 상태: ${isNewUser ? '신규 접속' : '기존 데이터 있음'} (메시지 ${instance.messagesMap.size}개)`)
+    // 🔥 데이터 유무와 관계없이 항상 statevector 교환
+    console.log('[#3-3] statevector 교환 시작 (가벼운 상태 동기화)')
+    instance._setInitialSyncState(true, '채팅 기록 동기화 중...')
 
-    if (isNewUser) {
-      // 🔥 신규 접속자: 시그널링 서버를 통해 초기 상태 요청
-      console.log('[#3-3] 초기 동기화 시작')
-      instance._setInitialSyncState(true, '채팅 기록 동기화 중...')
+    const snapshot = await requestInitialSync()
 
-      const snapshot = await requestInitialSync()
+    if (snapshot) {
+      // 스냅샷 적용
+      console.log(`[#3-4] statevector 적용 중... (${(snapshot.byteLength / 1024).toFixed(2)}KB)`)
+      instance._setInitialSyncState(true, `statevector 적용 중... (${(snapshot.byteLength / 1024).toFixed(2)}KB)`)
+      try {
+        const beforeSize = instance.messagesMap.size
+        Y.applyUpdate(instance.doc, snapshot)
+        const afterSize = instance.messagesMap.size
+        const addedMessages = afterSize - beforeSize
 
-      if (snapshot) {
-        // 스냅샷 적용
-        console.log(`[#3-4] 초기 스냅샷 적용 중... (${(snapshot.byteLength / 1024 / 1024).toFixed(2)}MB)`)
-        instance._setInitialSyncState(true, `스냅샷 적용 중... (${(snapshot.byteLength / 1024 / 1024).toFixed(2)}MB)`)
-        try {
-          const beforeSize = instance.messagesMap.size
-          Y.applyUpdate(instance.doc, snapshot)
-          const afterSize = instance.messagesMap.size
-          const addedMessages = afterSize - beforeSize
+        console.log(`[#3-5] ✅ statevector 적용 완료!`)
+        console.log(`  - 이전 메시지: ${beforeSize}개`)
+        console.log(`  - 현재 메시지: ${afterSize}개`)
+        console.log(`  - 추가된 메시지: ${addedMessages}개`)
+        instance._setInitialSyncState(true, `메시지 ${afterSize}개 동기화 완료`)
 
-          console.log(`[#3-5] ✅ 초기 스냅샷 적용 완료!`)
-          console.log(`  - 이전 메시지: ${beforeSize}개`)
-          console.log(`  - 현재 메시지: ${afterSize}개`)
-          console.log(`  - 추가된 메시지: ${addedMessages}개`)
-          instance._setInitialSyncState(true, `메시지 ${afterSize}개 동기화 완료`)
-
-          // 적용 후 UI 업데이트 대기
-          await new Promise(resolve => setTimeout(resolve, 100))
-        } catch (error) {
-          console.error('[#3-5] ❌ 초기 스냅샷 적용 실패:', error)
-          instance._setInitialSyncState(true, '스냅샷 적용 실패')
-        }
-      } else {
-        console.log('[#3-4] 초기 스냅샷 없음 - 빈 채팅방')
-        instance._setInitialSyncState(true, '새 채팅방입니다')
+        // 적용 후 UI 업데이트 대기
+        await new Promise(resolve => setTimeout(resolve, 100))
+      } catch (error) {
+        console.error('[#3-5] ❌ statevector 적용 실패:', error)
+        instance._setInitialSyncState(true, 'statevector 적용 실패')
       }
-
-      // 🔥 초기 상태 받은 후 y-webrtc 연결 (증분 동기화용)
-      console.log('[#3-6] y-webrtc 연결 시작 (증분 동기화)')
-      instance._setInitialSyncState(true, 'P2P 연결 중...')
-      instance.provider.connect()
     } else {
-      // 🔥 기존 사용자: y-webrtc 증분 동기화
-      console.log('[#3-3] 기존 데이터 있음 - y-webrtc 증분 동기화 시작')
-      instance._setInitialSyncState(true, '기존 데이터 동기화 중...')
-      instance.provider.connect()
+      console.log('[#3-4] statevector 없음 - 빈 채팅방')
+      instance._setInitialSyncState(true, '새 채팅방입니다')
     }
+
+    // 🔥 statevector 교환 후 y-webrtc 연결 (증분 동기화용)
+    console.log('[#3-6] y-webrtc 연결 시작 (증분 동기화)')
+    instance._setInitialSyncState(true, 'P2P 연결 중...')
+    instance.provider.connect()
 
     // Keepalive 시작
     _setupKeepalive(instance.provider)
