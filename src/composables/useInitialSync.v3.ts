@@ -19,10 +19,11 @@ const ACK_WINDOW = 10 // 청크 단위
 const ACK_TIMEOUT = 5000 // ms
 const PERIODIC_ACK_INTERVAL = 4000 // ms
 const BUFFER_CHECK_INTERVAL = 100 // ms
-const HANDSHAKE_TIMEOUT = 5000 // ms
+const HANDSHAKE_TIMEOUT = 10000 // ms (increased for mobile)
 const TRANSFER_TIMEOUT = 5 * 60 * 1000 // 5분
 const RECEIVE_TIMEOUT = 30000 // 30초
-const REQUEST_TIMEOUT = 5000 // 요청 응답 대기
+const REQUEST_TIMEOUT = 5000 // offer 대기 (5초 - 아무도 없으면 빨리 timeout)
+const DATACHANNEL_OPEN_TIMEOUT = 60000 // DataChannel 열림 + 전송 완료 대기 (60초)
 const MAX_RETRIES = 3
 
 const ICE_SERVERS: RTCIceServer[] = [
@@ -239,6 +240,11 @@ class SnapshotSender {
         this.checkAbort()
         this.checkTimeout()
 
+        // Check channel state
+        if (channel.readyState !== 'open') {
+          throw new Error(`Channel closed during transfer (state: ${channel.readyState})`)
+        }
+
         // Flow control: ACK-based backpressure
         await this.waitForAck(channel, this.currentChunkIndex)
 
@@ -334,9 +340,17 @@ class SnapshotSender {
   }
 
   private async sendChunk(channel: RTCDataChannel, chunkIndex: number): Promise<void> {
+    // Check channel state first
+    if (channel.readyState !== 'open') {
+      throw new Error(`Cannot send chunk: channel is ${channel.readyState}`)
+    }
+
     // Wait for buffer before send
     while (channel.bufferedAmount > BUFFER_CRITICAL) {
       this.checkAbort()
+      if (channel.readyState !== 'open') {
+        throw new Error(`Channel closed while waiting for buffer`)
+      }
       await this.sleep(20)
     }
 
@@ -977,6 +991,7 @@ export function useInitialSync(
   let currentReceiver: SnapshotReceiver | null = null
   let syncResolve: ((snapshot: Uint8Array | null) => void) | null = null
   let syncReject: ((error: Error) => void) | null = null
+  let requestTimeoutId: ReturnType<typeof setTimeout> | null = null
 
   /**
    * 시그널링 메시지 핸들러
@@ -1032,13 +1047,14 @@ export function useInitialSync(
       syncResolve = resolve
       syncReject = reject
 
-      const timeoutId = setTimeout(() => {
+      requestTimeoutId = setTimeout(() => {
         if (syncResolve) {
           console.warn('[InitialSync] ⏰ Request timeout - starting with empty room')
           cleanup()
           resolve(null)
           syncResolve = null
           syncReject = null
+          requestTimeoutId = null
         }
       }, REQUEST_TIMEOUT)
 
@@ -1046,11 +1062,17 @@ export function useInitialSync(
       const originalResolve = syncResolve
       const originalReject = syncReject
       syncResolve = (snapshot) => {
-        clearTimeout(timeoutId)
+        if (requestTimeoutId) {
+          clearTimeout(requestTimeoutId)
+          requestTimeoutId = null
+        }
         originalResolve?.(snapshot)
       }
       syncReject = (error) => {
-        clearTimeout(timeoutId)
+        if (requestTimeoutId) {
+          clearTimeout(requestTimeoutId)
+          requestTimeoutId = null
+        }
         originalReject?.(error)
       }
     })
@@ -1146,6 +1168,24 @@ export function useInitialSync(
     console.log(`[InitialSync] - Size: ${(offer.snapshotSize / 1024).toFixed(2)}KB`)
     console.log(`[InitialSync] - Chunks: ${offer.totalChunks}`)
 
+    // Offer를 받았으므로 기존 timeout 취소하고 DataChannel 열림 대기로 전환
+    if (requestTimeoutId) {
+      clearTimeout(requestTimeoutId)
+      console.log('[InitialSync] ⏱️ Request timeout cancelled - waiting for DataChannel')
+
+      // DataChannel 열림 대기 timeout으로 교체
+      requestTimeoutId = setTimeout(() => {
+        if (syncResolve) {
+          console.warn('[InitialSync] ⏰ DataChannel open timeout - starting with empty room')
+          cleanup()
+          syncResolve(null)
+          syncResolve = null
+          syncReject = null
+          requestTimeoutId = null
+        }
+      }, DATACHANNEL_OPEN_TIMEOUT)
+    }
+
     try {
       // Create receiver
       currentReceiver = new SnapshotReceiver()
@@ -1154,6 +1194,13 @@ export function useInitialSync(
       webrtcManager = new WebRTCManager(signaling, myUuid, offer.senderUuid, syncTopic)
 
       await webrtcManager.createAnswerConnection(offer, async (channel) => {
+        // DataChannel이 열렸으므로 timeout 취소
+        if (requestTimeoutId) {
+          clearTimeout(requestTimeoutId)
+          requestTimeoutId = null
+          console.log('[InitialSync] ✅ DataChannel opened - timeout cancelled')
+        }
+
         try {
           if (currentReceiver) {
             const snapshot = await currentReceiver.receive(channel)
