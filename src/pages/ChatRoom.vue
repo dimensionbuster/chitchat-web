@@ -15,6 +15,7 @@ import { useStyleSettings } from '../composables/useStyleSettings'
 import { getCachedFile } from '../composables/useStorageFileCache'
 import { showAlert, showConfirm } from '../composables/useCustomDialog'
 import { useConnectedUsers } from '../composables/useConnectedUsers'
+import { useFirebaseMessaging } from '../composables/useFirebaseMessaging'
 import router from '@/router'
 import ChatHeader from '@/components/layout/ChatHeader.vue'
 import MessageList from '@/components/message/MessageList.vue'
@@ -56,8 +57,11 @@ const isUploading = ref(false)
 const isInitialLoad = ref(true)
 const isSendingMessage = ref(false) // 내가 메시지를 보내는 중인지 추적
 
+// Firebase 푸시 알림 (모바일 앱 백그라운드용)
+const { initialize: initFirebase, joinRoom: joinFirebaseRoom, notifyNewMessage, notifyFileTransfer } = useFirebaseMessaging(me, myName.value)
+
 // Yjs & File Systems
-const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot, isInitialSyncing, initialSyncProgress } = await useYjs(activeRoomId, me, myName.value)
+const { messagesRef, messagesMap, files, sendTextMessage, attachFileMeta, provider, requestFile, respondFile, getTransferMap, loadMoreMessages, resetToLatest, isViewingLatest, forceResync, importSnapshot, exportSnapshot } = await useYjs(activeRoomId, me, myName.value)
 
 // 글로벌 큐 매니저 초기화
 const { setProvider } = useGlobalDataChannelQueue({
@@ -169,7 +173,10 @@ const handleSend = (message: string) => {
   if (yjsReady.value) {
     // 메시지 전송 시작 플래그 설정 (watch에서 알림이 울리지 않도록)
     isSendingMessage.value = true
+    const messageId = `${Date.now()}-${crypto.randomUUID()}`
     sendTextMessage(me, myName.value, message)
+    // Firebase 푸시 알림 전송 (모바일 앱 백그라운드용)
+    notifyNewMessage(activeRoomId, message, messageId)
     // 본인이 메시지를 보낼 때는 항상 최신 메시지로 이동
     resetToLatest()
     nextTick(() => {
@@ -195,6 +202,11 @@ const handleUploadFile = async (file: File) => {
 
     // 파일 청크 정보를 awareness에 등록 (다른 피어가 받을 수 있도록)
     await registerFileAvailability(fileId)
+
+    // Firebase 푸시 알림 전송 (모바일 앱 백그라운드용)
+    if (activeRoomId && meta.name) {
+      notifyFileTransfer(activeRoomId, meta.name, fileId)
+    }
 
     // 본인이 파일을 보낼 때는 항상 최신 메시지로 이동
     resetToLatest()
@@ -426,6 +438,11 @@ onMounted(async () => {
     yjsReady.value = e.connected
     console.log('Yjs status', e)
   })
+
+  // Firebase 푸시 알림 초기화 (모바일 앱 백그라운드용)
+  if (initFirebase()) {
+    joinFirebaseRoom(activeRoomId)
+  }
 
   // 프로필 사진 초기화
   await initializeProfilePictures()

@@ -541,12 +541,13 @@ class FileReceiver {
       this.partialState = loaded
       console.log(`[Receiver] Resume from ${validChunks.size} chunks`)
     } else {
-      // Create new state
+      // Create new state - use sender's chunkSize calculated from offer
+      const senderChunkSize = this.getChunkSize()
       this.partialState = {
         fileId: this.offer.fileId,
         fileName: this.offer.fileId,
         totalChunks: this.offer.totalChunks,
-        chunkSize: CHUNK_SIZE,
+        chunkSize: senderChunkSize,
         totalBytes: this.offer.fileSize,
         receivedChunks: new Set(),
         chunks: new Map(),
@@ -554,6 +555,13 @@ class FileReceiver {
         transferKey: this.transferKey
       }
     }
+  }
+
+  // Calculate sender's chunk size from offer (for cross-platform compatibility)
+  private getChunkSize(): number {
+    if (this.offer.totalChunks <= 1) return this.offer.fileSize
+    // Calculate chunk size from file size and total chunks
+    return Math.ceil(this.offer.fileSize / this.offer.totalChunks)
   }
 
   private async waitForChannelOpen(channel: RTCDataChannel): Promise<void> {
@@ -870,7 +878,8 @@ class FileReceiver {
 
   getCurrentProgress(): { received: number; total: number } {
     if (!this.partialState) return { received: 0, total: this.offer.fileSize }
-    const receivedBytes = Math.min(this.partialState.receivedChunks.size * CHUNK_SIZE, this.offer.fileSize)
+    const chunkSize = this.getChunkSize()
+    const receivedBytes = Math.min(this.partialState.receivedChunks.size * chunkSize, this.offer.fileSize)
     return { received: receivedBytes, total: this.offer.fileSize }
   }
 }
