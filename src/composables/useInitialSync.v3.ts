@@ -39,6 +39,7 @@ const ICE_SERVERS: RTCIceServer[] = [
 type SyncRequestMessage = {
   messageType: 'sync-request'
   requesterUuid: string
+  stateVector?: string  // Base64로 인코딩된 state vector (증분 동기화용)
   timestamp: number
 }
 
@@ -1031,14 +1032,26 @@ export function useInitialSync(
     console.log('[InitialSync] ⏳ Waiting for subscription to propagate (1s)...')
     await sleep(1000)
 
+    // 내가 이미 가진 상태를 state vector로 전송 (증분 동기화)
+    const stateVector = Y.encodeStateVector(doc)
+    // Uint8Array를 Base64로 변환 (루프 사용 - spread operator는 큰 배열에서 스택 오버플로우 발생 가능)
+    let binaryString = ''
+    for (let i = 0; i < stateVector.length; i++) {
+      binaryString += String.fromCharCode(stateVector[i]!)
+    }
+    const stateVectorBase64 = btoa(binaryString)
+    console.log(`[InitialSync] 📊 State vector encoded: ${stateVector.byteLength} bytes (Base64: ${stateVectorBase64.length} chars)`)
+    console.log(`[InitialSync] 📊 Requesting incremental sync (only new data will be sent)`)
+
     // Send request
     const request: SyncRequestMessage = {
       messageType: 'sync-request',
       requesterUuid: myUuid,
+      stateVector: stateVectorBase64,
       timestamp: Date.now()
     }
 
-    console.log('[InitialSync] 📤 Publishing request')
+    console.log('[InitialSync] 📤 Publishing request with state vector')
     signaling.publish(syncTopic, request as unknown as Record<string, unknown>)
     console.log(`[InitialSync] ⏳ Waiting for response (timeout: ${REQUEST_TIMEOUT}ms)...`)
 
@@ -1107,11 +1120,34 @@ export function useInitialSync(
     transferStartTime = Date.now()
 
     try {
-      // Create snapshot
-      const snapshot = Y.encodeStateAsUpdate(doc)
+      // state vector가 있으면 차이만, 없으면 전체 상태 인코딩
+      const isIncremental = !!request.stateVector
+      let stateVectorBytes: Uint8Array | undefined
+
+      if (isIncremental) {
+        // Base64에서 Uint8Array로 변환
+        const binaryString = atob(request.stateVector!)
+        stateVectorBytes = new Uint8Array(binaryString.length)
+        for (let i = 0; i < binaryString.length; i++) {
+          stateVectorBytes[i] = binaryString.charCodeAt(i)
+        }
+        console.log(`[InitialSync] 📊 State vector received: ${stateVectorBytes.byteLength} bytes`)
+      }
+
+      // 스냅샷 생성 (증분 또는 전체)
+      const snapshot = isIncremental
+        ? Y.encodeStateAsUpdate(doc, stateVectorBytes!)
+        : Y.encodeStateAsUpdate(doc)
       const snapshotSize = snapshot.byteLength
 
-      console.log(`[InitialSync] 📦 Snapshot created: ${(snapshotSize / 1024).toFixed(2)}KB`)
+      // 로그 출력
+      if (isIncremental) {
+        const fullSize = Y.encodeStateAsUpdate(doc).byteLength
+        const savedPercent = ((1 - snapshotSize / fullSize) * 100).toFixed(1)
+        console.log(`[InitialSync] 📦 Incremental snapshot: ${(snapshotSize / 1024).toFixed(2)}KB (saved ${savedPercent}% vs ${(fullSize / 1024).toFixed(2)}KB full)`)
+      } else {
+        console.log(`[InitialSync] 📦 Full snapshot: ${(snapshotSize / 1024).toFixed(2)}KB`)
+      }
 
       if (snapshotSize === 0) {
         console.warn('[InitialSync] ⚠️ Empty snapshot - not responding')
